@@ -1,0 +1,25 @@
+application:
+  lightweight_ram_threshold_gb: 8
+  max_concurrent_tools: 2
+  conversation_history_limit: 12
+
+filesystem:
+  # Expanded for the current user at runtime.
+  default_allowed_directories:
+    - "~/Documents"
+    - "~/Downloads"
+    - "~/Desktop"
+    - "~/Pictures"
+    - "~"
+  max_text_file_size: 2097152
+
+web:
+  searxng_url: "http://localhost:8080"
+  timeout_seconds: 10
+  max_response_size: 2097152
+  max_search_results: 10
+
+llm:
+  provider: "rule_based"
+  ollama_model: ""
+

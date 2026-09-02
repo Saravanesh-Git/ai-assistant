@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "local-linux-assistant"
+version = "0.1.0"
+description = "A lightweight, privacy-first Linux desktop assistant built on MCP"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Local Assistant Contributors" }]
+dependencies = [
+  "httpx>=0.27,<1",
+  "mcp>=2,<3",
+  "psutil>=5.9,<8",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<10",
+  "pytest-asyncio>=0.24,<2",
+]
+
+[project.scripts]
+local-assistant = "app.main:main"
+local-assistant-linux-server = "servers.linux_server.server:main"
+local-assistant-web-server = "servers.web_server.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app", "servers", "security"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+

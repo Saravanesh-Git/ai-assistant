@@ -1,0 +1,2 @@
+"""Safe web MCP server."""
+

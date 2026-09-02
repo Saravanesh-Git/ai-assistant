@@ -1,0 +1,2 @@
+"""Safe Linux MCP server."""
+
