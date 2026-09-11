@@ -15,6 +15,14 @@ ALLOWED_APPLICATIONS: dict[str, tuple[str, ...]] = {
     "calculator": ("gnome-calculator",),
 }
 
+# Explicit Windows targets work through WSL interoperability; never accept raw argv.
+ALLOWED_APPLICATIONS.update({
+    "windows_notepad": ("notepad.exe",),
+    "windows_calculator": ("calc.exe",),
+    "windows_files": ("explorer.exe",),
+    "windows_terminal": ("wt.exe",),
+})
+
 SAFE_COMMANDS: dict[str, tuple[str, ...]] = {
     "get_ip_address": ("hostname", "-I"),
     "get_kernel_version": ("uname", "-r"),

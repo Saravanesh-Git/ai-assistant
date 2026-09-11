@@ -18,7 +18,7 @@ class RuleBasedProvider(LLMProvider):
     ) -> str:
         return (
             "I can handle system usage, battery and disk checks; list allowed user folders; "
-            "create folders; launch allowlisted apps; and search the web. Try “show cpu” or "
+            "create folders and text files; move files and folders; launch allowlisted apps; and search the web. Try “show cpu” or "
             "“search the web for FastAPI”."
         )
 

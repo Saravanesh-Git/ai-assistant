@@ -37,7 +37,7 @@ class Assistant:
         if route.intent == "unsafe_path":
             return "That path is not allowed. Use one of your configured user folders."
         if route.intent == "unsupported_application":
-            return "That application is not allowlisted. Supported apps: firefox, chrome, code, terminal, files, calculator."
+            return "That application is not allowlisted. Supported apps: firefox, chrome, code, terminal, files, calculator, windows_notepad, windows_calculator, windows_files, windows_terminal."
         if route.tool is None:
             try:
                 return await self.provider.generate([Message("user", user_input)])
@@ -105,6 +105,10 @@ class Assistant:
         if tool == "create_directory":
             verb = "Created" if data.get("created") else "Already exists"
             return f"{verb}: {data['path']}"
+        if tool == "create_text_file":
+            return f"Created file: {data['path']}"
+        if tool == "move_path":
+            return f"Moved {data['source']} to {data['destination']}"
         if tool == "open_application":
             return f"Opened {data['application']}."
         if tool == "run_safe_command":

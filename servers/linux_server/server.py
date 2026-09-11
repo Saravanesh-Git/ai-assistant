@@ -13,6 +13,8 @@ from security.path_policy import PathPolicy
 from servers.linux_server.application_tools import open_application_data, run_safe_command_data
 from servers.linux_server.file_tools import (
     create_directory_data,
+    create_text_file_data,
+    move_path_data,
     list_directory_data,
     read_text_file_data,
 )
@@ -108,6 +110,24 @@ async def run_safe_command(command_id: str) -> dict[str, Any]:
     try:
         return run_safe_command_data(command_id)
     except (OSError, RuntimeError, ValueError) as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@mcp.tool()
+async def create_text_file(path: str, content: str = "") -> dict[str, Any]:
+    """Create a new UTF-8 text file without overwriting existing files."""
+    try:
+        return await anyio.to_thread.run_sync(create_text_file_data, path, content, path_policy, settings.max_file_size)
+    except (OSError, ValueError) as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@mcp.tool()
+async def move_path(source: str, destination: str) -> dict[str, Any]:
+    """Move a file or folder to an exact new path without replacing anything."""
+    try:
+        return await anyio.to_thread.run_sync(move_path_data, source, destination, path_policy)
+    except (OSError, ValueError) as exc:
         raise ToolError(str(exc)) from exc
 
 

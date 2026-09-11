@@ -41,12 +41,17 @@ class IntentRouter:
         allowed_paths: Iterable[Path | str] | None = None,
     ) -> None:
         self.home = (home or Path.home()).resolve(strict=False)
-        self.path_aliases = {
-            name.casefold(): self.home / name
-            for name in ("Documents", "Downloads", "Desktop", "Pictures", "Projects")
-        }
-        for configured in allowed_paths or ():
-            root = Path(configured).expanduser().resolve(strict=False)
+        roots = tuple(Path(root).expanduser().resolve(strict=False) for root in (allowed_paths or ()))
+        # Relative paths use the first configured root, never an invented Projects folder.
+        self.default_directory = roots[0] if roots else self.home
+        self.path_aliases = {}
+        standard_names = ("Documents", "Downloads", "Desktop", "Pictures", "Projects")
+        for root in roots or (self.home,):
+            for name in standard_names:
+                child = root / name
+                if child.is_dir():
+                    self.path_aliases.setdefault(name.casefold(), child)
+        for root in roots:
             self.path_aliases[root.name.casefold()] = root
 
     def route(self, message: str) -> Route:
@@ -54,6 +59,20 @@ class IntentRouter:
         lower = normalized.casefold()
         if not normalized:
             return Route("empty", None, confidence=1.0)
+
+        # Parse structured file commands before broad informational keywords.
+        match = re.fullmatch(r'(?:please\s+)?(?:create|make)\s+(?:a\s+)?file(?:\s+called|\s+named)?\s+(.+?)(?:\s+with content\s+(.*))?', message.strip(), re.I | re.S)
+        if match:
+            path = self._creation_path(match[1])
+            return Route("create_text_file", "create_text_file", {"path": str(path), "content": match[2] or ""}) if path else Route("unsafe_path", None)
+        match = re.fullmatch(r'(?:please\s+)?move\s+(.+?)\s+to\s+(.+)', message.strip(), re.I)
+        if match:
+            paths = [self._safe_user_path(value.strip().strip('"\'')) for value in match.groups()]
+            return Route("move_path", "move_path", dict(zip(("source", "destination"), map(str, paths)))) if all(paths) else Route("unsafe_path", None)
+        normalized = re.sub(
+            r"^((?:please\s+)?(?:open|launch|start)\s+)windows\s+(calculator|notepad|files|terminal)([.!?]?)$",
+            r"\1windows_\2\3", normalized, flags=re.I,
+        )
 
         if any(term in lower for term in ("system information", "system info", "computer information")):
             return Route("get_system_info", "get_system_info")
@@ -85,8 +104,7 @@ class IntentRouter:
 
         match = self._create.match(normalized)
         if match:
-            raw_name = match.group(1).strip().strip('"\'')
-            path = self._safe_user_path(raw_name, default_root="Projects")
+            path = self._creation_path(match.group(1))
             if path is not None:
                 return Route("create_directory", "create_directory", {"path": str(path)})
             return Route("unsafe_path", None, confidence=1.0)
@@ -107,20 +125,38 @@ class IntentRouter:
 
         return Route("unknown", None, confidence=0.0)
 
-    def _safe_user_path(self, value: str, default_root: str | None = None) -> Path | None:
+    def _creation_path(self, value: str) -> Path | None:
+        # Quoted names can contain literal " in "; unquoted "in" introduces a folder.
+        match = re.fullmatch(
+            r"(\"[^\"]+\"|'[^']+'|.+?)(?:\s+in\s+(.+))?", value.strip(), re.I
+        )
+        if not match:
+            return None
+        name = match[1].strip().strip("\"'")
+        if match[2] is None:
+            return self._safe_user_path(name)
+        destination = match[2].strip()
+        if not destination.startswith(("\"", "'")):
+            destination = re.sub(r"\s+(?:folder|directory)$", "", destination, flags=re.I)
+        parent = self._safe_user_path(destination.strip("\"'"))
+        # An explicit destination takes a filename, not a second absolute path.
+        if parent is None or Path(name).name != name or name in (".", ".."):
+            return None
+        return self._safe_user_path(str(parent / name))
+
+    def _safe_user_path(self, value: str) -> Path | None:
         if not value or "\x00" in value:
             return None
-        lower = value.casefold()
-        if lower in self.path_aliases:
-            return self.path_aliases[lower]
-        candidate = Path(value).expanduser()
-        if not candidate.is_absolute():
-            if default_root:
-                base = self.path_aliases.get(default_root.casefold(), self.home / default_root)
-                candidate = base / candidate
-            else:
-                candidate = self.home / candidate
         try:
+            lower = value.casefold()
+            if lower in self.path_aliases:
+                return self.path_aliases[lower]
+            first, separator, rest = value.partition("/")
+            if separator and first.casefold() in self.path_aliases:
+                return (self.path_aliases[first.casefold()] / rest).resolve(strict=False)
+            candidate = Path(value).expanduser()
+            if not candidate.is_absolute():
+                candidate = self.default_directory / candidate
             return candidate.resolve(strict=False)
-        except OSError:
+        except (OSError, ValueError):
             return None

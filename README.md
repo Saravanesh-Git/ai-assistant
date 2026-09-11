@@ -185,3 +185,94 @@ Tests cover routing, path containment, sensitive files, process injection, priva
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Browser interface and voice
+
+Run from the project directory (loads your existing `.env`):
+
+```bash
+.venv/bin/python -m pip install -e '.[dev]'
+.venv/bin/python -m app.web.server
+```
+
+Open **http://localhost:8765** in Windows Chrome. The backend binds only to
+127.0.0.1; WSL localhost forwarding normally makes it accessible from Windows.
+The CLI and SearXNG container continue to work independently.
+
+Click **Enable voice**, allow the microphone, then say **“hello buddy, show system
+information”**. Interim recognition results appear in the command box before the
+final transcript is submitted. You can also say the wake phrase, pause, and speak
+a command within 15 seconds. Enable voice again after a recognition error. Text
+input remains available when speech recognition is unsupported.
+
+This uses the [browser SpeechRecognition API](https://developer.mozilla.org/en-US/docs/Web/API/SpeechRecognition),
+which has limited browser support and may send audio to an online recognition
+service. Wake detection also uses that service while enabled; it is not a local,
+always-on wake-word engine. Keep the tab open; background suspension and browser
+endpointing can interrupt or split speech. Interim results reduce perceived delay
+but do not guarantee a latency target. For a future offline version, replace this
+with a local wake detector and streaming speech-to-text worker behind the same
+command API. No audio is uploaded to this Python backend.
+
+Examples (typed or spoken):
+
+```text
+create folder Projects/demo
+create file Projects/notes.txt with content hello world
+move Projects/notes.txt to Projects/demo/notes.txt
+open windows calculator
+open windows notepad
+open windows_files
+open windows_terminal
+search the web for Python tutorials
+```
+
+Use exact destination paths for moves; parent folders must already exist. New
+files must have a supported text extension. Existing files are never overwritten.
+Moves support files and folders on the same filesystem, reject configured roots,
+sensitive descendants, and directories containing symlinks. Cross-filesystem
+moves are rejected instead of silently copying and deleting. Path checks are the
+existing local-user policy, not protection against hostile concurrent filesystem
+mutation.
+
+File changes and application launches present the actual tool arguments for
+approval. Approvals expire after two minutes and can only be used once. The API
+requires a per-process token and rejects foreign Host/Origin headers. Do not
+expose this local command service through a public tunnel or reverse proxy.
+
+### Windows native apps from WSL
+
+[WSL can directly execute Windows `.exe` programs](https://learn.microsoft.com/en-us/windows/wsl/filesystems).
+The implementation adds explicit IDs in `security/command_policy.py`:
+`windows_notepad` → `notepad.exe`, `windows_calculator` → `calc.exe`,
+`windows_files` → `explorer.exe`, and `windows_terminal` → `wt.exe`.
+Executables must be installed and discoverable on WSL's PATH; WSL interoperability
+and Windows PATH import must be enabled. Launches use fixed argument arrays with
+`shell=False`; no recognized speech is interpolated into PowerShell or cmd.exe.
+A successful launch reports process creation, not verification of a visible window.
+
+For Windows file operations, add only the folders you want to expose to
+`ASSISTANT_ALLOWED_PATHS`, for example `/mnt/c/Users/<you>/Documents` and
+`/mnt/c/Users/<you>/Downloads`. Preserve any existing Linux roots in the comma-separated
+list. These aliases then resolve to Windows files through the mount. For future
+apps outside PATH, add operator-controlled absolute executable paths to the
+allowlist. If richer Windows desktop automation is needed later, use a Windows
+companion service with authenticated, allowlisted operations; direct WSL interop
+is sufficient for these launch-only operations.
+
+### Relative paths and destination phrases
+
+Relative paths use the **first entry in `ASSISTANT_ALLOWED_PATHS`**. For example,
+with `/home/hacker/,/mnt/c/Users/Sys`, `create folder test` targets
+`/home/hacker/test`, and `create file testing.txt in test folder` targets
+`/home/hacker/test/testing.txt`. The parent folder must exist before creating a
+file; missing parents produce a message identifying the folder to create.
+There is no implicit `Projects` directory.
+
+Standard folder aliases such as `Downloads` are discovered from existing direct
+children of the configured roots (first match wins). An explicitly configured
+root named `Downloads` takes precedence. Use full paths to disambiguate folders.
+You can quote names with spaces, for example
+`create file "meeting notes.txt" in "test" with content hello`.
+Restart the server after changing allowed paths or adding a standard folder
+that should become an alias.

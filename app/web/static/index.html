@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Buddy · Local assistant</title><link rel="stylesheet" href="/static/style.css"><script src="/static/app.js" defer></script></head>
+<body><main><header><a class="brand" href="/">✳ buddy<span>YOUR LOCAL ASSISTANT</span></a><span class="badge" id="connection">Connecting…</span></header>
+<section class="intro"><div class="eyebrow">A LITTLE HELP, RIGHT HERE.</div><h1>What can I do<br>for you today?</h1><p>Open an app. Organize your files. Find something new.</p></section>
+<section class="voice"><div><h2>Just say “hello buddy”</h2><p id="voice-status" role="status">Enable your microphone to use voice commands.</p></div><button id="mic" type="button">Enable voice</button></section>
+<p class="privacy">Voice uses your browser’s speech service, which may send audio online. Keep this tab open. You’ll review file changes and app launches before they run.</p>
+<div class="suggestions"><button data-command="show system information">↗ System info</button><button data-command="show files in Downloads">↗ My downloads</button><button data-command="open windows_calculator">↗ Windows calculator</button></div>
+<section id="messages" aria-live="polite" aria-label="Conversation"></section>
+<form id="composer"><label for="command">Your command <span id="live">Text or voice</span></label><div class="input-row"><textarea id="command" rows="2" maxlength="8000" placeholder="Try: create file Projects/notes.txt with content hello"></textarea><button id="send" type="submit">Send ↗</button></div></form>
+<footer>LOCAL TOOLS · SEARXNG SEARCH · YOU’RE IN CONTROL</footer></main></body></html>

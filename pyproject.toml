@@ -12,6 +12,8 @@ license = { file = "LICENSE" }
 authors = [{ name = "Local Assistant Contributors" }]
 dependencies = [
   "httpx>=0.27,<1",
+  "starlette>=1.6,<2",
+  "uvicorn>=0.30,<1",
   "mcp>=2,<3",
   "psutil>=5.9,<8",
 ]
@@ -24,6 +26,7 @@ dev = [
 
 [project.scripts]
 local-assistant = "app.main:main"
+local-assistant-ui = "app.web.server:main"
 local-assistant-linux-server = "servers.linux_server.server:main"
 local-assistant-web-server = "servers.web_server.server:main"
 

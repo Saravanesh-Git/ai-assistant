@@ -43,3 +43,54 @@ def create_directory_data(path: str, policy: PathPolicy) -> dict[str, Any]:
     directory.mkdir(parents=True, exist_ok=True)
     return {"path": str(directory), "created": not existed}
 
+
+
+def create_text_file_data(path: str, content: str, policy: PathPolicy, max_size: int) -> dict[str, Any]:
+    from security.path_policy import SAFE_TEXT_EXTENSIONS
+    target = policy.resolve_allowed(path, must_exist=False)
+    if target.suffix.lower() not in SAFE_TEXT_EXTENSIONS:
+        raise ValueError("File type is not allowed")
+    if not target.parent.is_dir():
+        raise ValueError(f"Destination folder does not exist: {target.parent}. Create the folder first.")
+    encoded = content.encode("utf-8")
+    if len(encoded) > max_size:
+        raise ValueError("Content exceeds the file size limit")
+    # Exclusive creation refuses overwrite, including a concurrently created file.
+    with target.open("xb") as stream:
+        stream.write(encoded)
+    return {"path": str(target), "created": True}
+
+
+def move_path_data(source: str, destination: str, policy: PathPolicy) -> dict[str, Any]:
+    import ctypes
+    import errno
+    import os
+    source_path = policy.resolve_allowed(source)
+    target = policy.resolve_allowed(destination, must_exist=False)
+    if source_path in policy.allowed_roots or target in policy.allowed_roots:
+        raise ValueError("Configured roots cannot be moved or replaced")
+    if source_path == target or target.is_relative_to(source_path):
+        raise ValueError("Destination must be a different path outside the source")
+    if source_path.is_dir():
+        for directory, dirs, files in os.walk(source_path, followlinks=False):
+            for name in dirs + files:
+                child = Path(directory) / name
+                if child.is_symlink():
+                    raise ValueError("Moving directories containing symlinks is not supported")
+                policy.resolve_allowed(child)
+    elif not source_path.is_file():
+        raise ValueError("Only regular files and directories can be moved")
+    # Linux/WSL atomic no-replace rename, including directories. Fail closed on
+    # unsupported filesystems; cross-device copy/delete needs a separate workflow.
+    libc = ctypes.CDLL(None, use_errno=True)
+    rename = getattr(libc, "renameat2", None)
+    if rename is None:
+        raise ValueError("Atomic moves are unavailable on this platform")
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    if rename(-100, os.fsencode(source_path), -100, os.fsencode(target), 1) != 0:
+        error = ctypes.get_errno()
+        if error == errno.EXDEV:
+            raise ValueError("Cross-filesystem moves are not supported; use paths on the same drive")
+        raise OSError(error, os.strerror(error))
+    return {"source": str(source_path), "destination": str(target)}

@@ -25,6 +25,8 @@ TOOL_PERMISSIONS: dict[str, PermissionLevel] = {
     "fetch_webpage": PermissionLevel.READ,
     "run_safe_command": PermissionLevel.READ,
     "create_directory": PermissionLevel.WRITE,
+    "create_text_file": PermissionLevel.WRITE,
+    "move_path": PermissionLevel.WRITE,
     "open_application": PermissionLevel.EXECUTE,
 }
 
@@ -49,6 +51,10 @@ class PermissionManager:
     def describe(tool: str, arguments: dict[str, Any]) -> str:
         if tool == "open_application":
             return f"Open {arguments.get('application', 'an application')}"
+        if tool == "create_text_file":
+            return f"Create text file {arguments.get('path', '')}"
+        if tool == "move_path":
+            return f"Move {arguments.get('source', '')} to {arguments.get('destination', '')}"
         if tool == "create_directory":
             return f"Create folder {arguments.get('path', '')}"
         return tool.replace("_", " ").capitalize()

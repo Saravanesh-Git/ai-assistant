@@ -41,10 +41,10 @@ def test_directory_alias(router: IntentRouter) -> None:
     assert route.arguments == {"path": "/home/tester/Downloads"}
 
 
-def test_create_defaults_to_projects(router: IntentRouter) -> None:
+def test_create_defaults_to_home_without_config(router: IntentRouter) -> None:
     route = router.route("create a folder called test")
     assert route.tool == "create_directory"
-    assert route.arguments == {"path": "/home/tester/Projects/test"}
+    assert route.arguments == {"path": "/home/tester/test"}
 
 
 def test_configured_wsl_folder_overrides_missing_home_alias() -> None:
@@ -91,5 +91,44 @@ async def test_confirmed_write_reaches_tool_manager(router: IntentRouter) -> Non
 
     assistant = Assistant(tools, RuleBasedProvider(), router=router, confirm=approve)
     response = await assistant.handle("create folder called test")
-    assert response == "Created: /home/tester/Projects/test"
+    assert response == "Created: /home/tester/test"
     assert tools.calls[0][2] == "user_allowed"
+
+
+@pytest.mark.parametrize("command", [
+    "create file testing.txt in test folder",
+    "create file testing.txt in test",
+    'create file "testing.txt" in "test"',
+])
+def test_file_destination_and_configured_default(tmp_path, command):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "test").mkdir()
+    router = IntentRouter(home=home, allowed_paths=[home, tmp_path / "windows"])
+    route = router.route(command)
+    assert route.tool == "create_text_file"
+    assert route.arguments == {"path": str(home / "test/testing.txt"), "content": ""}
+
+
+def test_configured_root_controls_relative_paths(tmp_path):
+    root = tmp_path / "work"
+    router = IntentRouter(home=tmp_path / "home", allowed_paths=[root])
+    assert router.route("create folder test").arguments == {"path": str(root / "test")}
+    assert router.route("create file testing.txt").arguments["path"] == str(root / "testing.txt")
+    assert router.route("create folder child in test folder").arguments["path"] == str(root / "test/child")
+    assert router.route("move a.txt to b.txt").arguments == {"source": str(root / "a.txt"), "destination": str(root / "b.txt")}
+
+
+def test_windows_downloads_under_allowed_parent(tmp_path):
+    home, windows = tmp_path / "home", tmp_path / "windows"
+    home.mkdir()
+    (windows / "Downloads").mkdir(parents=True)
+    router = IntentRouter(home=home, allowed_paths=[home, windows])
+    assert router.route("show files in Downloads").arguments["path"] == str(windows / "Downloads")
+
+
+def test_creation_preserves_quoted_name_and_content(tmp_path):
+    router = IntentRouter(allowed_paths=[tmp_path])
+    route = router.route('create file "notes in May.txt" in test folder with content words in text')
+    assert route.arguments == {"path": str(tmp_path / "test/notes in May.txt"), "content": "words in text"}
+    assert router.route("create file /tmp/a.txt in test folder").intent == "unsafe_path"
