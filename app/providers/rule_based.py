@@ -17,8 +17,7 @@ class RuleBasedProvider(LLMProvider):
         tools: Sequence[dict[str, Any]] | None = None,
     ) -> str:
         return (
-            "I can handle system usage, battery and disk checks; list allowed user folders; "
-            "create folders and text files; move files and folders; launch allowlisted apps; and search the web. Try “show cpu” or "
+            "I'm A.M.I.G.O. I can check your system, battery, and disk; list and read your files; "
+            "create folders and text files; move files and folders; open desktop apps; and search in your browser. Try “show cpu” or "
             "“search the web for FastAPI”."
         )
-

@@ -12,15 +12,15 @@ from app.core.tool_manager import ToolManager
 
 
 BANNER = r"""
-╭──────────────────────────────────────╮
-│          LOCAL AI ASSISTANT          │
-│          Linux Edition               │
-╰──────────────────────────────────────╯
+╭────────────────────────────────────────╮
+│               A.M.I.G.O.               │
+│         Personal command center        │
+╰────────────────────────────────────────╯
 """
 
 
 async def confirm_action(description: str, tool: str, arguments: dict[str, Any]) -> bool:
-    print(f"\nAssistant wants to:\n\n{description}\n\nAllow?")
+    print(f"\nA.M.I.G.O. wants to:\n\n{description}\n\nAllow?")
     answer = input("[Y] Yes  [N] No > ")
     return answer.strip().casefold() in {"y", "yes"}
 
@@ -56,7 +56,7 @@ async def show_system_check(manager: ToolManager, settings: Settings, llm_name: 
     print(f"LLM: {llm_name}")
     if manager.server_errors:
         print("Note: one or more optional capability servers are unavailable.")
-    print("\nAssistant is ready. Type 'help' or 'exit'.\n")
+    print("\nA.M.I.G.O. is ready. Type 'help' or 'exit'.\n")
 
 
 async def run_cli(assistant: Assistant, manager: ToolManager, settings: Settings) -> None:
@@ -75,10 +75,10 @@ async def run_cli(assistant: Assistant, manager: ToolManager, settings: Settings
             return
         if command in {"help", "/help"}:
             print(
-                "Assistant > Try: show system information; show cpu; check ram; disk space; "
+                "A.M.I.G.O. > Try: show system information; show cpu; check ram; disk space; "
                 "show files in Downloads; create a folder called test; open firefox; "
                 "search the web for FastAPI."
             )
             continue
         response = await assistant.handle(user_input)
-        print(f"\nAssistant > {response}\n")
+        print(f"\nA.M.I.G.O. > {response}\n")

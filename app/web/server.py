@@ -1,9 +1,11 @@
-"""Loopback web UI with same-origin requests and one-use action approvals."""
+"""A.M.I.G.O. loopback UI with direct commands and optional action approvals."""
 from __future__ import annotations
 
 import json
 import secrets
 import time
+import asyncio
+import platform
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -17,7 +19,8 @@ from starlette.staticfiles import StaticFiles
 from app.core.assistant import Assistant
 from app.core.config import load_settings
 from app.core.tool_manager import ToolManager
-from app.providers.rule_based import RuleBasedProvider
+from app.providers.factory import create_provider
+from security.desktop import is_wsl, resolve_executable
 
 STATIC = Path(__file__).parent / "static"
 
@@ -29,15 +32,14 @@ def create_app(manager_factory=ToolManager):
     @asynccontextmanager
     async def lifespan(app):
         settings = load_settings()
-        provider = RuleBasedProvider()
-        if settings.llm_provider == "ollama":
-            from app.providers.ollama import OllamaProvider
-            optional = OllamaProvider(base_url=settings.ollama_url, model=settings.ollama_model)
-            if optional.available:
-                provider = optional
+        provider = await asyncio.to_thread(create_provider, settings)
         async with manager_factory(settings) as manager:
             app.state.manager = manager
             app.state.provider = provider
+            app.state.desktop = {
+                "platform": "Windows + WSL" if is_wsl() else platform.system(),
+                "windows_available": bool(is_wsl() and resolve_executable("explorer.exe")),
+            }
             yield
         pending.clear()
 
@@ -45,7 +47,24 @@ def create_app(manager_factory=ToolManager):
         return FileResponse(STATIC / "index.html")
 
     async def config(request):
-        return JSONResponse({"token": token, "tools": request.app.state.manager.available_tools})
+        settings = request.app.state.manager.settings
+        return JSONResponse({"token": token, "tools": request.app.state.manager.available_tools,
+                             "name": "A.M.I.G.O.", "wake_phrase": "Hey Amigo",
+                             "provider": request.app.state.provider.name,
+                             "confirm_actions": settings.confirm_actions,
+                             "allowed_paths": [str(p) for p in settings.allowed_paths],
+                             **request.app.state.desktop})
+
+    async def status(request):
+        if request.headers.get("x-assistant-token") != token:
+            return JSONResponse({"error": "Invalid session token"}, status_code=403)
+        manager = request.app.state.manager
+        names = ("get_cpu_usage", "get_memory_usage", "get_disk_usage")
+        results = await asyncio.gather(*(
+            manager.call(name, {}, permission_result="dashboard_read") for name in names
+        ), return_exceptions=True)
+        return JSONResponse({name: None if isinstance(result, BaseException) else result
+                             for name, result in zip(names, results)})
 
     async def command(request: Request):
         if request.headers.get("x-assistant-token") != token:
@@ -101,6 +120,7 @@ def create_app(manager_factory=ToolManager):
         return JSONResponse({"reply": reply})
 
     app = Starlette(lifespan=lifespan, routes=[Route("/", index), Route("/api/config", config),
+        Route("/api/status", status),
         Route("/api/command", command, methods=["POST"]),
         Mount("/static", StaticFiles(directory=STATIC), name="static")])
 

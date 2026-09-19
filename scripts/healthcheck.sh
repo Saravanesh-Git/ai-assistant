@@ -26,7 +26,7 @@ from app.core.tool_manager import ToolManager
 async def check_mcp():
     settings = load_settings()
     async with ToolManager(settings) as manager:
-        required = {"get_system_info", "get_cpu_usage", "get_memory_usage", "search_web"}
+        required = {"get_system_info", "get_cpu_usage", "get_memory_usage", "open_browser_search", "search_web"}
         missing = required - set(manager.available_tools)
         if missing:
             raise SystemExit(f"MCP health check failed; missing tools: {', '.join(sorted(missing))}")
@@ -44,6 +44,6 @@ try:
         else:
             print(f"SearXNG: unavailable (HTTP {response.status}); local tools remain available")
 except (OSError, urllib.error.URLError):
-    print("SearXNG: unavailable; configure SEARXNG_URL to enable web search")
+    print("SearXNG: unavailable; browser searches still work. Configure SEARXNG_URL for structured search results")
 PY
 

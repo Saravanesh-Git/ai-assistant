@@ -1,62 +1,40 @@
-"""Allowlist-based filesystem policy."""
-
+"""Path normalization and resource checks; filesystem access follows OS permissions."""
 from __future__ import annotations
 
 import os
+import stat
 from pathlib import Path
 from typing import Iterable
 
-
-SAFE_TEXT_EXTENSIONS = frozenset(
-    {".txt", ".md", ".json", ".csv", ".py", ".js", ".ts", ".html", ".css", ".yaml", ".yml", ".toml"}
-)
-SENSITIVE_PARTS = frozenset(
-    {".ssh", ".gnupg", ".gpg", "password-store", "keyrings", "mozilla", "chromium", "google-chrome"}
-)
-SENSITIVE_FILENAMES = frozenset(
-    {"shadow", "gshadow", "id_rsa", "id_ed25519", "credentials", "login data", "key4.db", "secrets.json"}
-)
-PRIVATE_KEY_SUFFIXES = (".pem", ".key", ".p12", ".pfx")
+from security.desktop import windows_to_wsl
 
 
 class PathPolicyError(ValueError):
-    """Raised when a requested filesystem path violates policy."""
+    """Invalid path or unsupported file operation (not an access allowlist)."""
 
 
 class PathPolicy:
-    def __init__(self, allowed_roots: Iterable[Path | str]) -> None:
-        roots = [Path(root).expanduser().resolve(strict=False) for root in allowed_roots]
-        if not roots:
-            raise ValueError("At least one allowed filesystem root is required")
-        self.allowed_roots = tuple(dict.fromkeys(roots))
+    def __init__(self, allowed_roots: Iterable[Path | str] = ()) -> None:
+        # Kept as a compatibility argument; legacy roots no longer restrict access.
+        self.allowed_roots = (Path('/'),)
 
     def resolve_allowed(self, requested: str | Path, *, must_exist: bool = True) -> Path:
-        if not str(requested).strip():
-            raise PathPolicyError("Path cannot be empty")
-        candidate = Path(os.path.expandvars(str(requested))).expanduser().resolve(strict=False)
-        if not any(candidate == root or candidate.is_relative_to(root) for root in self.allowed_roots):
-            raise PathPolicyError("Path is outside configured allowed directories")
-        self._reject_sensitive(candidate)
-        if must_exist and not candidate.exists():
-            raise PathPolicyError("Path does not exist")
+        value = str(requested)
+        if not value.strip() or '\x00' in value:
+            raise PathPolicyError('Enter a non-empty path without NUL characters')
+        value = windows_to_wsl(os.path.expandvars(value))
+        # Do not resolve symlinks or inspect parents here: inaccessible ancestors
+        # must reach the operation so PermissionError can trigger elevation.
+        candidate = Path(os.path.abspath(os.path.expanduser(value)))
+        if must_exist:
+            candidate.stat()  # Unlike exists(), preserves PermissionError on Python 3.14.
         return candidate
 
     def validate_text_file(self, requested: str | Path, *, max_size: int) -> Path:
         candidate = self.resolve_allowed(requested)
-        if not candidate.is_file():
-            raise PathPolicyError("Path is not a regular file")
-        if candidate.suffix.lower() not in SAFE_TEXT_EXTENSIONS:
-            raise PathPolicyError("File type is not allowed")
-        if candidate.stat().st_size > max_size:
-            raise PathPolicyError(f"File exceeds the {max_size}-byte size limit")
+        info = candidate.stat()
+        if not stat.S_ISREG(info.st_mode):
+            raise PathPolicyError('Path is not a regular file')
+        if info.st_size > max_size:
+            raise PathPolicyError(f'File exceeds the {max_size}-byte response size limit')
         return candidate
-
-    @staticmethod
-    def _reject_sensitive(candidate: Path) -> None:
-        lower_parts = {part.casefold() for part in candidate.parts}
-        name = candidate.name.casefold()
-        if lower_parts & SENSITIVE_PARTS or name in SENSITIVE_FILENAMES:
-            raise PathPolicyError("Sensitive paths are blocked")
-        if name.endswith(PRIVATE_KEY_SUFFIXES) or name.startswith("id_"):
-            raise PathPolicyError("Private-key files are blocked")
-

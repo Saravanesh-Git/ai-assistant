@@ -1,278 +1,161 @@
-# Local Linux Assistant
+# A.M.I.G.O.
 
-A lightweight, privacy-first Linux desktop assistant for low-end computers. It uses deterministic intent routing for common requests and the official Model Context Protocol (MCP) Python SDK as a strict capability boundary. It does not need a local model, a GPU, Docker, or a paid API.
+**Assistant for Managing Information & General Operations.** A personal command center for Linux and Windows through WSL. Use text or voice to launch apps, manage files, check your system, and open web searches in your desktop browser. No AI model, GPU, Docker, or paid API is required.
 
-The MVP deliberately does **not** expose a shell or attempt unrestricted desktop control.
+The browser UI features a responsive cyan HUD, an animated assistant core, real system readings, quick app launches, and a shared text/voice command stream. Animations respect your reduced-motion preference.
 
-## Architecture
+## Start
 
-```text
-User → CLI → Assistant Core → Rule Router ─┐
-                         ↘ Optional LLM ───┤
-                                          ↓
-                                     MCP Client
-                                    (local stdio)
-                                      ↙       ↘
-                            Linux MCP Server  Web MCP Server
-                             system/files/apps  SearXNG/fetch
-```
-
-The core discovers tools dynamically from independent MCP servers. Providers never execute processes or access files directly. Every tool call follows validation → permission → server security policy → execution.
-
-## Features
-
-- System, CPU, RAM, disk, and battery status
-- Allowlisted directory listing and small text-file reads
-- Confirmed directory creation inside configured user roots
-- Confirmed launch of a closed application allowlist
-- SearXNG web search with normalized results
-- Public-web fetch with scheme, DNS/IP, redirect, timeout, type, and size checks
-- Optional Ollama responses without automatic startup or model downloads
-- JSON-line audit logs containing metadata only
-- Maximum two concurrent tool jobs and no background model/service
-
-## Requirements
-
-- Ubuntu/Debian-based Linux (initial target; other Linux distributions may work)
-- Python 3.10 or newer
-- 8 GB RAM supported; no dedicated GPU required
-- Internet only for initial Python package installation and optional web search
-
-The application automatically selects lightweight mode at 8 GB RAM or below. It never preloads embeddings or starts a model.
-
-## Install
-
-```bash
-git clone <repository-url> local-assistant
-cd local-assistant
-chmod +x scripts/*.sh
-./scripts/install.sh
-```
-
-The installer detects Linux and Python, creates `.venv`, installs the package, creates `~/.config/local-assistant/config.yaml`, runs health checks, and starts the CLI. It does not install system packages or require root.
-
-For development:
+Requires Python 3.10+ on Linux or WSL. From the project directory:
 
 ```bash
 python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -e '.[dev]'
-python -m app.main
-```
-
-Copy `.env.example` to `.env` to override runtime values. The environment is the active configuration source in this MVP; `config/default.yaml` documents packaged defaults and is copied for future UI/config migration.
-
-## Optional SearXNG
-
-Search uses SearXNG's JSON API and defaults to `http://localhost:8080`. Local tools remain available when SearXNG is down.
-
-Use any trusted SearXNG instance during development:
-
-```bash
-SEARXNG_URL=https://your-instance.example python -m app.main
-```
-
-Or run the included loopback-only development container:
-
-```bash
-docker compose up -d searxng
-docker compose ps
-```
-
-The included `config/searxng/settings.yml` enables JSON output and avoids relying on a root-owned anonymous configuration volume. Wait until `docker compose ps` reports the service as healthy. Docker is optional and is never required by the assistant itself.
-
-## Use
-
-```bash
-python -m app.main
-```
-
-Example requests:
-
-```text
-show system information
-what is my cpu usage?
-what is my ram usage?
-how much disk space do I have?
-show files in Downloads
-create a folder called test
-open firefox
-search the web for FastAPI
-find recent news about Linux
-show me the current directory
-```
-
-Write and execute operations display a confirmation prompt. `exit` or Ctrl-D closes the assistant.
-
-## Run MCP servers directly
-
-The assistant normally owns both stdio subprocesses:
-
-```bash
-python -m servers.linux_server.server
-python -m servers.web_server.server
-```
-
-These commands speak MCP JSON-RPC on standard output, so they appear idle in a regular terminal. Do not print debugging output to their stdout.
-
-## Security model
-
-- There is no `execute_shell` tool. Raw LLM/user strings never reach a shell.
-- `open_application` and `run_safe_command` map exact IDs to fixed argv arrays and use `shell=False`.
-- Default file roots are `~/Documents`, `~/Downloads`, `~/Desktop`, `~/Pictures`, and `~/Projects`. Override them with a comma-separated `ASSISTANT_ALLOWED_PATHS` value.
-- Folder names such as `Downloads` and `library` resolve to matching configured root names, including Windows folders mounted under `/mnt/c` in WSL.
-- Symlink-aware resolved paths must remain under an allowed root. `.ssh`, `.gnupg`, browser credential areas, password stores, private keys, and sensitive filenames are blocked.
-- Text reads accept a small extension allowlist and a hard 2 MB maximum.
-- Page fetch rejects non-HTTP schemes, credentials in URLs, localhost, and private/reserved/link-local IP destinations. Every redirect is revalidated, requests time out within 10 seconds, and decoded response bytes are capped at 2 MB.
-- The configured SearXNG endpoint is an operator-trusted service and may intentionally be localhost; arbitrary fetch URLs may not.
-- MCP's schemas validate argument types, but the server policies remain the source of authority.
-- LLM output is untrusted. Adding a provider cannot bypass routing, permissions, or MCP server validation.
-- Audit logs omit prompts, file contents, URLs, paths, tokens, secrets, and tool arguments.
-
-This is defense in depth for a small local assistant, not a sandbox for hostile native code. Run it as an unprivileged user.
-
-## Optional Ollama
-
-Ollama is disabled by default. The assistant checks for an existing executable only when configured; it never starts Ollama or downloads a model.
-
-```bash
-LLM_PROVIDER=ollama OLLAMA_MODEL=your-small-model python -m app.main
-```
-
-If Ollama or the configured model is unavailable, rule-based operation continues.
-
-## Add a tool
-
-1. Implement the operation in the appropriate `servers/*` module using native APIs or a fixed argv map.
-2. Validate inputs inside the server; client checks are not security boundaries.
-3. Decorate a strongly typed function with `@mcp.tool()` in that server's `server.py`.
-4. Classify the tool in `app/core/permissions.py`.
-5. Add deterministic routing only if it is a common request.
-6. Add tests for normal behavior, denial cases, size/time limits, and injection attempts.
-
-The tool manager discovers it automatically. A future server can be added to `ToolManager.SERVER_MODULES` without coupling it to an LLM provider.
-
-## Add an LLM provider
-
-Subclass `LLMProvider` from `app/core/llm.py`, implement async `generate(messages, tools=None)`, and select it during application startup. Provider-generated structured tool requests must still be converted to a known tool name and arguments, then processed by `PermissionManager` and `ToolManager`; never call tools from provider code.
-
-## Tests and health checks
-
-```bash
-python -m pip install -e '.[dev]'
-pytest
-./scripts/healthcheck.sh
-```
-
-Tests cover routing, path containment, sensitive files, process injection, private/local URLs, redirects, malformed HTML, response limits, timeouts, search normalization, and Linux system tools.
-
-## Troubleshooting
-
-- **Web search unavailable:** verify `SEARXNG_URL`, test the instance's `/search?q=test&format=json`, and enable JSON format in SearXNG.
-- **Folder rejected:** the Linux/WSL folder must actually exist and be under an allowed root. This project does not map Windows Explorer libraries automatically. Use an existing Linux folder, or add a WSL path such as `/mnt/c/Users/<you>/Downloads` to `ASSISTANT_ALLOWED_PATHS` before startup.
-- **Application not installed:** an allowlisted name is still rejected when its executable is absent from `PATH`.
-- **MCP server unavailable:** run `./scripts/healthcheck.sh`; ensure the same virtual environment contains `mcp`, `psutil`, and `httpx`.
-- **No Ollama:** expected by default. Rule routing and all MCP tools remain available.
-
-## Roadmap
-
-- User-editable permissions and allowed-root UI
-- Multiple dynamically configured MCP servers and optional Streamable HTTP
-- Cloud LLM providers without tool-layer changes
-- Safer browser integration and richer intent schemas
-- Lightweight native desktop UI, packaging, and autostart controls
-
-## License
-
-MIT — see [LICENSE](LICENSE).
-
-## Browser interface and voice
-
-Run from the project directory (loads your existing `.env`):
-
-```bash
 .venv/bin/python -m pip install -e '.[dev]'
+cp .env.example .env # only if you do not already have a .env
 .venv/bin/python -m app.web.server
 ```
 
-Open **http://localhost:8765** in Windows Chrome. The backend binds only to
-127.0.0.1; WSL localhost forwarding normally makes it accessible from Windows.
-The CLI and SearXNG container continue to work independently.
+Open **http://localhost:8765**. For voice and Windows apps, open the page in Windows Chrome while the backend runs in WSL. WSL localhost forwarding normally connects the two. Restart the server after changing configuration or upgrading an already-running instance, then refresh the page.
 
-Click **Enable voice**, allow the microphone, then say **“hello buddy, show system
-information”**. Interim recognition results appear in the command box before the
-final transcript is submitted. You can also say the wake phrase, pause, and speak
-a command within 15 seconds. Enable voice again after a recognition error. Text
-input remains available when speech recognition is unsupported.
+The existing entry points remain compatible:
 
-This uses the [browser SpeechRecognition API](https://developer.mozilla.org/en-US/docs/Web/API/SpeechRecognition),
-which has limited browser support and may send audio to an online recognition
-service. Wake detection also uses that service while enabled; it is not a local,
-always-on wake-word engine. Keep the tab open; background suspension and browser
-endpointing can interrupt or split speech. Interim results reduce perceived delay
-but do not guarantee a latency target. For a future offline version, replace this
-with a local wake detector and streaming speech-to-text worker behind the same
-command API. No audio is uploaded to this Python backend.
-
-Examples (typed or spoken):
-
-```text
-create folder Projects/demo
-create file Projects/notes.txt with content hello world
-move Projects/notes.txt to Projects/demo/notes.txt
-open windows calculator
-open windows notepad
-open windows_files
-open windows_terminal
-search the web for Python tutorials
+```bash
+.venv/bin/python -m app.main    # terminal interface
+local-assistant-ui            # browser interface, after installation
 ```
 
-Use exact destination paths for moves; parent folders must already exist. New
-files must have a supported text extension. Existing files are never overwritten.
-Moves support files and folders on the same filesystem, reject configured roots,
-sensitive descendants, and directories containing symlinks. Cross-filesystem
-moves are rejected instead of silently copying and deleting. Path checks are the
-existing local-user policy, not protection against hostile concurrent filesystem
-mutation.
+`./scripts/install.sh` also creates a virtual environment and starts the CLI. Runtime settings come from environment variables and `.env`; `config/default.yaml` is a reference, not an active configuration loader.
 
-File changes and application launches present the actual tool arguments for
-approval. Approvals expire after two minutes and can only be used once. The API
-requires a per-process token and rejects foreign Host/Origin headers. Do not
-expose this local command service through a public tunnel or reverse proxy.
+## Voice and text
 
-### Windows native apps from WSL
+1. Click **Enable voice** and grant the browser microphone permission.
+2. Say **“Hey Amigo”**, with or without a command in the same sentence.
+3. Keep giving commands. The assistant remains awake after commands, typed requests, and normal speech-service restarts. There is no wake timeout.
+4. Say **“pause listening”**, **“pause conversation”**, or **“go to sleep”** to return to wake-word mode. Say **“Hey Amigo”** to resume.
+5. Say **“stop listening”** or click **Turn off mic** to disable the microphone completely.
 
-[WSL can directly execute Windows `.exe` programs](https://learn.microsoft.com/en-us/windows/wsl/filesystems).
-The implementation adds explicit IDs in `security/command_policy.py`:
-`windows_notepad` → `notepad.exe`, `windows_calculator` → `calc.exe`,
-`windows_files` → `explorer.exe`, and `windows_terminal` → `wt.exe`.
-Executables must be installed and discoverable on WSL's PATH; WSL interoperability
-and Windows PATH import must be enabled. Launches use fixed argument arrays with
-`shell=False`; no recognized speech is interpolated into PowerShell or cmd.exe.
-A successful launch reports process creation, not verification of a visible window.
+Speech transcripts appear below the command input without overwriting your typed draft. Final voice requests and typed requests share an ordered queue, so a follow-up request can wait for an action already running. Interim speech never executes. Enter sends text; Shift+Enter inserts a newline. The command guide lists examples and your configured file locations.
 
-For Windows file operations, add only the folders you want to expose to
-`ASSISTANT_ALLOWED_PATHS`, for example `/mnt/c/Users/<you>/Documents` and
-`/mnt/c/Users/<you>/Downloads`. Preserve any existing Linux roots in the comma-separated
-list. These aliases then resolve to Windows files through the mount. For future
-apps outside PATH, add operator-controlled absolute executable paths to the
-allowlist. If richer Windows desktop automation is needed later, use a Windows
-companion service with authenticated, allowlisted operations; direct WSL interop
-is sufficient for these launch-only operations.
+Voice uses the [browser SpeechRecognition API](https://developer.mozilla.org/en-US/docs/Web/API/SpeechRecognition), which has limited browser support and may send audio to an online speech service. Keep the tab open. Browser suspension, device sleep, permissions, and service outages can interrupt listening; a web page cannot guarantee an always-on background microphone. A normal [recognition end event](https://developer.mozilla.org/en-US/docs/Web/API/SpeechRecognition/end_event) restarts recognition while preserving the awake state. Persistent errors stop voice with an explanation, and text remains available. Reloading the page starts a new voice session. The Python backend receives text, not microphone audio.
 
-### Relative paths and destination phrases
+## Commands
 
-Relative paths use the **first entry in `ASSISTANT_ALLOWED_PATHS`**. For example,
-with `/home/hacker/,/mnt/c/Users/Sys`, `create folder test` targets
-`/home/hacker/test`, and `create file testing.txt in test folder` targets
-`/home/hacker/test/testing.txt`. The parent folder must exist before creating a
-file; missing parents produce a message identifying the folder to create.
-There is no implicit `Projects` directory.
+| Task | Examples |
+| --- | --- |
+| System | `show system information`, `show cpu`, `check ram`, `disk space`, `battery status` |
+| Applications | `open calculator`, `open files`, `open terminal`, `open VS Code`, `open windows notepad`, `open windows edge` |
+| Browser search | `search for northern lights in the web`, `search the web for Python tutorials`, `look up battery technology` |
+| List/read | `show files in Downloads`, `read file demo/notes.txt` |
+| Create | `create folder demo`, `create file notes.txt in demo with content hello` |
+| Move | `move demo/notes.txt to demo/ideas.txt` |
+| Predefined commands | `run pwd`, `run date`, `run whoami`, `run uname -r`, `run hostname -I` |
 
-Standard folder aliases such as `Downloads` are discovered from existing direct
-children of the configured roots (first match wins). An explicitly configured
-root named `Downloads` takes precedence. Use full paths to disambiguate folders.
-You can quote names with spaces, for example
-`create file "meeting notes.txt" in "test" with content hello`.
-Restart the server after changing allowed paths or adding a standard folder
-that should become an alias.
+Supported actions execute immediately after a direct voice or text request. **There is no repeated in-app permission prompt by default.** Set `ASSISTANT_CONFIRM_ACTIONS=true` to opt back into one-use, two-minute confirmations. Browser microphone prompts and Windows elevation prompts belong to the browser/OS and cannot be suppressed by the app.
+
+Commands remain a fixed registry, not an arbitrary shell. Unknown commands explain the available choices; add more commands to `SAFE_COMMANDS` as needed. App launches use fixed argument arrays with `shell=False`. Files remain subject to the configured path policy, and existing files are never overwritten.
+
+## Windows and WSL
+
+[WSL can directly run Windows executables](https://learn.microsoft.com/en-us/windows/wsl/filesystems). A.M.I.G.O. forwards the desktop/session environment to its MCP subprocesses, including the WSL interoperability variables.
+
+On WSL, generic calculator, files, terminal, Chrome, and VS Code requests target their Windows versions. Explicit names include `windows_calculator`, `windows_notepad`, `windows_files`, `windows_terminal`, `windows_edge`, `windows_chrome`, and `windows_code`. Firefox continues to use the installed Linux application.
+
+Executable discovery tries PATH, then known Windows installation locations on `/mnt/c`. Per-user installs use the current Windows profile, discovered with a fixed `cmd.exe /d /c echo %USERPROFILE%` command. No recognized speech or user path text is interpolated into cmd.exe or PowerShell. If profile discovery is unavailable, set:
+
+```dotenv
+ASSISTANT_WINDOWS_PROFILE=/mnt/c/Users/YourName
+```
+
+WSL interop must be enabled and the requested application installed. For nonstandard drive mounts or custom install locations, expose the executable on WSL's PATH. The Connections panel reports whether the Windows Explorer executable can be found; this is discovery, not a full desktop-automation health check. A launch response confirms process creation, not a visible window. CPU, memory, and storage readings describe the Linux/WSL environment running the backend.
+
+### File locations
+
+Without an explicit `ASSISTANT_ALLOWED_PATHS`, defaults are the Linux user's Documents, Downloads, Desktop, Pictures, and Projects directories, plus existing standard folders in the current Windows profile on WSL. An explicit list replaces these defaults and is never automatically broadened.
+
+```dotenv
+ASSISTANT_ALLOWED_PATHS=/home/you/Projects,/mnt/c/Users/YourName/Documents,/mnt/c/Users/YourName/Downloads
+```
+
+Relative paths use the first configured root. Named aliases such as `Downloads` resolve to configured roots or existing standard subfolders. Windows drive paths such as `C:\Users\YourName\Documents\notes.txt` map to `/mnt/c/Users/YourName/Documents/notes.txt`; they must still be within an allowed root. Custom WSL mount points should use their Linux paths explicitly. Use full paths to disambiguate duplicate folder names. OneDrive or other redirected Windows folders can be included explicitly in the allowed list.
+
+Text creation requires an existing parent folder and a supported text extension. Files are limited to 2 MB. Moves take an exact destination path, never overwrite, and must remain on the same filesystem. Configured roots, sensitive files, and directories containing symlinks cannot be moved. Symlink-aware containment and sensitive-file checks apply even when confirmation is off.
+
+## Web searches
+
+Search commands open `https://www.google.com/search?q=...` in the desktop's default browser. Query text is URL-encoded and passed as a single argument. WSL uses Windows Explorer, falling back to `wslview`; Linux uses `xdg-open`. No popup permission or SearXNG service is needed. A clickable search link is also returned; if no browser launcher works, the response explains that and provides the link.
+
+The existing `search_web` MCP capability still supports structured SearXNG results for integrations. It is separate from the browser-opening command. To enable it:
+
+```bash
+docker compose up -d searxng
+# or configure SEARXNG_URL to a trusted JSON-enabled instance
+```
+
+Public-page f
+tch retains scheme, DNS/IP, redirect, timeout, MIME type, and response-size validation. A configured SearXNG instance is operator-trusted and may intentionally be local.
+
+## Optional and future AI
+
+Deterministic routing handles all supported commands before invoking any optional provider. The default `rule_based` provider needs no model or network service. Optional Ollama remains available:
+
+```bash
+LLM_PROVIDER=ollama OLLAMA_MODEL=your-model .venv/bin/python -m app.web.server
+```
+
+Ollama must already be installed and configured. A.M.I.G.O. never starts it or downloads models. If a provider cannot be initialized, the factory falls back to local rules; request-time failures are reported without disabling tools.
+
+Both CLI and web use `app/providers/factory.py`. To add an AI integration:
+
+1. Implement `LLMProvider.generate(messages, tools=None)` from `app/core/llm.py`.
+2. Register a settings-to-provider factory in `PROVIDERS`.
+3. Select it using `LLM_PROVIDER` and read any provider-specific settings in that adapter.
+
+Providers currently generate text responses, without conversation persistence or automatic model tool calls. Future structured tool proposals must pass known-tool, argument, permission, and server validation before execution. Never give provider code a direct process/file executor. `app/web/static/voice.js` similarly isolates browser speech behind state, transcript, and command callbacks so a future local speech adapter can replace it without changing the command API.
+
+```text
+Browser (text / speech adapter) or CLI
+                  ↓
+           Assistant core
+        deterministic intent router
+          ↙                   ↘
+ Known command          Optional text provider
+       ↓
+ Permission policy → MCP tool manager
+                 ↙                  ↘
+ Linux / WSL server             Web server
+ system, files, apps, browser   SearXNG, fetch
+```
+
+The tool manager discovers independent stdio MCP servers. To add a capability, implement and validate it in its server, decorate it with `@mcp.tool()`, classify it in `app/core/permissions.py`, and add a deterministic route if appropriate. Unknown tools remain denied. Audit logs contain tool/status metadata, not prompts, paths, content, tokens, or arguments.
+
+The local API binds to `127.0.0.1:8765`, checks Host/Origin, and requires a per-process token for commands and telemetry. Keep it on loopback rather than exposing it through a public tunnel. Run the assistant as your normal user.
+
+## Verification
+
+```bash
+.venv/bin/python -m pytest
+./scripts/healthcheck.sh
+```
+
+Tests cover routing, direct and optional-confirmed execution, Windows executable discovery, browser URL encoding and launcher failures, provider extension/fallback, API origin/token checks, file containment and overwrite protection, public-web policy, and system tools.
+
+Optional browser regression checks use simulated speech and desktop responses; they do not open real applications:
+
+```bash
+.venv/bin/python -m pip install playwright
+.venv/bin/python -m playwright install chromium
+.venv/bin/python scripts/verify_ui.py
+```
+
+These check persistent wake state, interim/final transcripts, queued commands, restart/pause/stop, denied microphone access, text fallback, output escaping, and layout widths from 320 to 1440 pixels. Screenshots go to `/tmp/amigo-desktop.png` and `/tmp/amigo-mobile.png`. Real microphone recognition and Windows window launches still require testing on a Windows/WSL desktop.
+
+## Troubleshooting
+
+- **Microphone blocked:** allow microphone access in the browser's site settings, then click Enable voice. Use Chrome on Windows if the browser has no speech API.
+- **Windows app unavailable:** verify WSL interop, installation, PATH, and Windows profile discovery. `open windows calculator` is a useful first check.
+- **Browser did not open:** use the returned search link; verify `explorer.exe`/`wslview` on WSL or `xdg-open` on a Linux desktop.
+- **Folder rejected:** open the command guide to inspect the allowed roots. Add the intended folder to `.env` and restart. Sensitive paths remain blocked.
+- **Dashboard disconnected:** ensure the backend is running, use `http://localhost:8765`, and refresh after a backend restart.
+- **No AI provider:** expected by default. System, file, app, and browser tools continue to work.
+
+MIT — see [LICENSE](LICENSE).

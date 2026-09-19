@@ -48,16 +48,11 @@ async def async_main() -> None:
     from app.core.assistant import Assistant
     from app.core.config import load_settings
     from app.core.tool_manager import ToolManager
-    from app.providers.ollama import OllamaProvider
-    from app.providers.rule_based import RuleBasedProvider
+    from app.providers.factory import create_provider
 
     _load_dotenv()
     settings = load_settings()
-    provider = RuleBasedProvider()
-    if settings.llm_provider == "ollama":
-        optional = OllamaProvider(base_url=settings.ollama_url, model=settings.ollama_model)
-        if optional.available:
-            provider = optional
+    provider = create_provider(settings)
     async with ToolManager(settings) as manager:
         assistant = Assistant(manager, provider, confirm=confirm_action)
         await run_cli(assistant, manager, settings)

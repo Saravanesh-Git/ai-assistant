@@ -26,7 +26,8 @@ class Manager:
         return {'path': arguments['path'], 'created': True}
 
 
-def test_web_approval_and_origin():
+def test_web_approval_and_origin(monkeypatch):
+    monkeypatch.setenv("ASSISTANT_CONFIRM_ACTIONS", "true")
     app = create_app(Manager)
     with TestClient(app, base_url='http://localhost:8765') as client:
         assert client.get('/').status_code == 200
@@ -84,7 +85,26 @@ def test_new_routes(tmp_path):
 
 
 def test_windows_fixed_launch():
-    with patch('servers.linux_server.application_tools.shutil.which', return_value='/mnt/c/Windows/System32/calc.exe'), patch('servers.linux_server.application_tools.subprocess.Popen', return_value=Mock(pid=1)) as launch:
+    with patch('servers.linux_server.application_tools.resolve_executable', return_value='/mnt/c/Windows/System32/calc.exe'), patch('servers.linux_server.application_tools.subprocess.Popen', return_value=Mock(pid=1)) as launch:
         open_application_data('windows_calculator')
         assert launch.call_args.args[0] == ['/mnt/c/Windows/System32/calc.exe']
         assert launch.call_args.kwargs['shell'] is False
+
+
+def test_web_direct_actions_and_config(monkeypatch):
+    monkeypatch.delenv('ASSISTANT_CONFIRM_ACTIONS', raising=False)
+    app = create_app(Manager)
+    with TestClient(app, base_url='http://localhost:8765') as client:
+        config = client.get('/api/config').json()
+        assert config['wake_phrase'] == 'Hey Amigo'
+        assert config['confirm_actions'] is False
+        headers = {'x-assistant-token': config['token']}
+        response = client.post('/api/command', headers=headers, json={'message': 'create folder demo'})
+        assert 'approval' not in response.json()
+        assert response.json()['reply'].startswith('Created:')
+        assert len(app.state.manager.calls) == 1
+        assert client.get('/api/status').status_code == 403
+        assert client.post('/api/command', headers=headers, json={'message': 'x' * 8001}).status_code == 400
+        assert client.post('/api/command', headers=headers, json={'message': 'x' * 17000}).status_code == 413
+        assert client.post('/api/command', headers=headers, content='text').status_code == 415
+        assert 'A.M.I.G.O.' in client.get('/').text

@@ -1,4 +1,7 @@
 application:
+  name: "A.M.I.G.O."
+  wake_phrase: "Hey Amigo"
+  confirm_actions: false
   lightweight_ram_threshold_gb: 8
   max_concurrent_tools: 2
   conversation_history_limit: 12
@@ -10,7 +13,7 @@ filesystem:
     - "~/Downloads"
     - "~/Desktop"
     - "~/Pictures"
-    - "~"
+    - "~/Projects"
   max_text_file_size: 2097152
 
 web:

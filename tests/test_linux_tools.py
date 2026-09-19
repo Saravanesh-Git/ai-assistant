@@ -49,7 +49,7 @@ def test_file_tools(tmp_path: Path) -> None:
 def test_application_uses_fixed_argv_without_shell() -> None:
     process = Mock(pid=4321)
     with (
-        patch("servers.linux_server.application_tools.shutil.which", return_value="/usr/bin/firefox"),
+        patch("servers.linux_server.application_tools.resolve_executable", return_value="/usr/bin/firefox"),
         patch("servers.linux_server.application_tools.subprocess.Popen", return_value=process) as popen,
     ):
         result = open_application_data("firefox")

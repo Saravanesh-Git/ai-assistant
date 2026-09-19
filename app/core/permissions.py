@@ -28,6 +28,12 @@ TOOL_PERMISSIONS: dict[str, PermissionLevel] = {
     "create_text_file": PermissionLevel.WRITE,
     "move_path": PermissionLevel.WRITE,
     "open_application": PermissionLevel.EXECUTE,
+    "open_browser_search": PermissionLevel.EXECUTE,
+    "open_path": PermissionLevel.EXECUTE,
+    "run_command": PermissionLevel.EXECUTE,
+    "find_files": PermissionLevel.READ,
+    "copy_path": PermissionLevel.WRITE,
+    "write_text_file": PermissionLevel.WRITE,
 }
 
 
@@ -40,12 +46,15 @@ class PermissionDecision:
 
 
 class PermissionManager:
+    def __init__(self, *, confirm_actions: bool = False) -> None:
+        self.confirm_actions = False  # Legacy confirm-all mode no longer applies.
+
     def check_permission(self, tool: str, arguments: dict[str, Any]) -> PermissionDecision:
         level = TOOL_PERMISSIONS.get(tool)
         if level is None:
             return PermissionDecision(False, None, False, "Unknown tools are denied")
         description = self.describe(tool, arguments)
-        return PermissionDecision(True, level, level >= PermissionLevel.WRITE, description)
+        return PermissionDecision(True, level, False, description)
 
     @staticmethod
     def describe(tool: str, arguments: dict[str, Any]) -> str:
@@ -58,4 +67,3 @@ class PermissionManager:
         if tool == "create_directory":
             return f"Create folder {arguments.get('path', '')}"
         return tool.replace("_", " ").capitalize()
-

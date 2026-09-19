@@ -21,6 +21,11 @@ ALLOWED_APPLICATIONS.update({
     "windows_calculator": ("calc.exe",),
     "windows_files": ("explorer.exe",),
     "windows_terminal": ("wt.exe",),
+    "windows_edge": ("msedge.exe",),
+    "windows_chrome": ("chrome.exe",),
+    "windows_code": ("Code.exe",),
+    "notepad": ("notepad.exe",),
+    "edge": ("msedge.exe",),
 })
 
 SAFE_COMMANDS: dict[str, tuple[str, ...]] = {
@@ -50,4 +55,3 @@ def safe_command(command_id: str) -> tuple[str, ...]:
     if not _IDENTIFIER.fullmatch(key) or key not in SAFE_COMMANDS:
         raise CommandPolicyError("Command ID is not in the allowlist")
     return SAFE_COMMANDS[key]
-

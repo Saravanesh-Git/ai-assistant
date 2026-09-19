@@ -72,12 +72,19 @@ class ToolManager:
         server_errlog = self._stack.enter_context(open(os.devnull, "w", encoding="utf-8"))
         safe_env = {
             "SEARXNG_URL": self.settings.searxng_url,
-            "ASSISTANT_ALLOWED_PATHS": ",".join(str(path) for path in self.settings.allowed_paths),
             "MAX_FILE_SIZE": str(self.settings.max_file_size),
+            "COMMAND_TIMEOUT_SECONDS": str(self.settings.command_timeout_seconds),
             "MAX_WEB_RESPONSE_SIZE": str(self.settings.max_web_response_size),
             "WEB_TIMEOUT_SECONDS": str(self.settings.web_timeout_seconds),
             "PYTHONPATH": str(self.project_root),
         }
+        # MCP's default environment omits desktop/session variables needed for WSL
+        # interop and Linux desktop launchers. Forward only these known settings.
+        for name in ("PATH", "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR",
+                     "DBUS_SESSION_BUS_ADDRESS", "WSL_INTEROP", "WSL_DISTRO_NAME",
+                     "ASSISTANT_WINDOWS_PROFILE"):
+            if name in os.environ:
+                safe_env[name] = os.environ[name]
         for module in self.SERVER_MODULES:
             params = StdioServerParameters(
                 command=sys.executable,
@@ -89,7 +96,7 @@ class ToolManager:
                 client = await self._stack.enter_async_context(
                     Client(
                         stdio_client(params, errlog=server_errlog),
-                        read_timeout_seconds=float(self.settings.web_timeout_seconds + 2),
+                        read_timeout_seconds=float(max(self.settings.web_timeout_seconds, self.settings.command_timeout_seconds) + 10),
                     )
                 )
                 discovered = await client.list_tools()

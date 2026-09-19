@@ -15,22 +15,16 @@ def _int_env(name: str, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(value, maximum))
 
 
-def _default_allowed_paths() -> tuple[Path, ...]:
-    home = Path.home()
-    return tuple(home / name for name in ("Documents", "Downloads", "Desktop", "Pictures", "Projects"))
-
-
-def _allowed_paths_from_env() -> tuple[Path, ...]:
-    raw = os.getenv("ASSISTANT_ALLOWED_PATHS", "").strip()
-    if not raw:
-        return _default_allowed_paths()
-    return tuple(Path(item.strip()).expanduser() for item in raw.split(",") if item.strip())
-
-
 @dataclass(frozen=True, slots=True)
 class Settings:
+    # Legacy constructor fields remain compatible; environment allowlists and
+    # confirm-all switches are intentionally ignored. OS permissions are authoritative.
+    confirm_actions: bool = False
+    allowed_paths: tuple[Path, ...] = (Path("/"),)
     searxng_url: str = field(default_factory=lambda: os.getenv("SEARXNG_URL", "http://localhost:8080"))
-    allowed_paths: tuple[Path, ...] = field(default_factory=_allowed_paths_from_env)
+    command_timeout_seconds: int = field(
+        default_factory=lambda: _int_env("COMMAND_TIMEOUT_SECONDS", 120, 5, 600)
+    )
     max_file_size: int = field(
         default_factory=lambda: _int_env("MAX_FILE_SIZE", 2 * 1024 * 1024, 1024, 2 * 1024 * 1024)
     )
@@ -66,4 +60,3 @@ class Settings:
 
 def load_settings() -> Settings:
     return Settings()
-

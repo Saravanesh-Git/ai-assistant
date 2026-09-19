@@ -4,6 +4,7 @@ import pytest
 
 from app.core.assistant import Assistant
 from app.core.router import IntentRouter
+from app.core.permissions import PermissionManager
 from app.providers.rule_based import RuleBasedProvider
 
 
@@ -20,11 +21,11 @@ def router() -> IntentRouter:
         ("check ram", "get_memory_usage", {}),
         ("how much disk space do I have?", "get_disk_usage", {"path": "/"}),
         ("open firefox", "open_application", {"application": "firefox"}),
-        ("search Python", "search_web", {"query": "Python", "max_results": 5}),
+        ("search Python", "open_browser_search", {"query": "Python"}),
         (
             "search the web for latest Python news",
-            "search_web",
-            {"query": "latest Python news", "max_results": 5},
+            "open_browser_search",
+            {"query": "latest Python news"},
         ),
         ("show me the current directory", "run_safe_command", {"command_id": "get_current_directory"}),
     ],
@@ -76,7 +77,7 @@ class FakeTools:
 @pytest.mark.asyncio
 async def test_write_is_cancelled_without_confirmation(router: IntentRouter) -> None:
     tools = FakeTools()
-    assistant = Assistant(tools, RuleBasedProvider(), router=router)
+    assistant = Assistant(tools, RuleBasedProvider(), router=router, permissions=PermissionManager(confirm_actions=True))
     response = await assistant.handle("create folder called test")
     assert response == "Action cancelled."
     assert tools.calls == []
@@ -89,7 +90,7 @@ async def test_confirmed_write_reaches_tool_manager(router: IntentRouter) -> Non
     async def approve(description, tool, arguments):
         return True
 
-    assistant = Assistant(tools, RuleBasedProvider(), router=router, confirm=approve)
+    assistant = Assistant(tools, RuleBasedProvider(), router=router, confirm=approve, permissions=PermissionManager(confirm_actions=True))
     response = await assistant.handle("create folder called test")
     assert response == "Created: /home/tester/test"
     assert tools.calls[0][2] == "user_allowed"
@@ -132,3 +133,44 @@ def test_creation_preserves_quoted_name_and_content(tmp_path):
     route = router.route('create file "notes in May.txt" in test folder with content words in text')
     assert route.arguments == {"path": str(tmp_path / "test/notes in May.txt"), "content": "words in text"}
     assert router.route("create file /tmp/a.txt in test folder").intent == "unsafe_path"
+
+
+@pytest.mark.parametrize(('message', 'query'), [
+    ('search for "CPU usage" in the web', 'CPU usage'),
+    ('Hey Amigo, search the web for memory management', 'memory management'),
+    ('look up battery technology', 'battery technology'),
+    ('search for cats & dogs on the web', 'cats & dogs'),
+])
+def test_browser_search_precedes_system_keywords(router, message, query):
+    route = router.route(message)
+    assert route.tool == 'open_browser_search'
+    assert route.arguments == {'query': query}
+
+
+@pytest.mark.parametrize(('message', 'command'), [
+    ('run date', 'get_date'), ('execute whoami', 'get_logged_in_user'),
+    ('run uname -r', 'get_kernel_version'), ('run hostname -I', 'get_ip_address'),
+])
+def test_command_routes(router, message, command):
+    assert router.route(message).arguments == {'command_id': command}
+    assert router.route('run date; touch /tmp/unsafe').tool is None
+
+
+def test_windows_paths_and_aliases(router):
+    assert router.route(r'create file C:\Users\Me\Documents\note.txt').arguments['path'] == '/mnt/c/Users/Me/Documents/note.txt'
+    assert router.route('open file explorer').arguments == {'application': 'windows_files'}
+    assert router.route('open VS Code').arguments == {'application': 'code'}
+    assert router.route('open windows edge').arguments == {'application': 'windows_edge'}
+    assert router.route('create folder memory').tool == 'create_directory'
+    assert router.route('show files in battery').tool == 'list_directory'
+
+
+@pytest.mark.asyncio
+async def test_direct_write_needs_no_confirmation(router):
+    tools = FakeTools()
+    async def unwanted_prompt(*args):
+        pytest.fail('Direct commands must not ask for permission')
+    assistant = Assistant(tools, RuleBasedProvider(), router=router, confirm=unwanted_prompt)
+    assert await assistant.handle('create folder demo') == 'Created: /home/tester/demo'
+    assert tools.calls[0][2] == 'direct_request'
+    assert not PermissionManager().check_permission('unknown_tool', {}).allowed

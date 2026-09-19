@@ -9,6 +9,7 @@ from app.core.llm import LLMProvider, Message
 from app.core.permissions import PermissionManager
 from app.core.router import IntentRouter
 from app.core.tool_manager import ToolInvocationError, ToolManager, ToolUnavailableError
+from security.command_policy import ALLOWED_APPLICATIONS
 
 ConfirmCallback = Callable[[str, str, dict[str, Any]], Awaitable[bool]]
 
@@ -27,7 +28,9 @@ class Assistant:
         self.provider = provider
         configured_paths = getattr(getattr(tool_manager, "settings", None), "allowed_paths", ())
         self.router = router or IntentRouter(allowed_paths=configured_paths)
-        self.permissions = permissions or PermissionManager()
+        self.permissions = permissions or PermissionManager(
+            confirm_actions=getattr(getattr(tool_manager, "settings", None), "confirm_actions", False)
+        )
         self.confirm = confirm
 
     async def handle(self, user_input: str) -> str:
@@ -36,8 +39,10 @@ class Assistant:
             return "Please enter a request."
         if route.intent == "unsafe_path":
             return "That path is not allowed. Use one of your configured user folders."
+        if route.intent == "unsupported_command":
+            return "Available commands: run pwd, run date, run whoami, run uname -r, run hostname -I. More commands can be added to the command registry."
         if route.intent == "unsupported_application":
-            return "That application is not allowlisted. Supported apps: firefox, chrome, code, terminal, files, calculator, windows_notepad, windows_calculator, windows_files, windows_terminal."
+            return "I can open these applications when installed: " + ", ".join(ALLOWED_APPLICATIONS) + "."
         if route.tool is None:
             try:
                 return await self.provider.generate([Message("user", user_input)])
@@ -47,7 +52,7 @@ class Assistant:
         decision = self.permissions.check_permission(route.tool, route.arguments)
         if not decision.allowed:
             return "That capability is denied by the permission policy."
-        permission_result = "read_allowed"
+        permission_result = "direct_request" if not decision.requires_confirmation else "read_allowed"
         if decision.requires_confirmation:
             if self.confirm is None or not await self.confirm(decision.description, route.tool, route.arguments):
                 return "Action cancelled."
@@ -110,7 +115,13 @@ class Assistant:
         if tool == "move_path":
             return f"Moved {data['source']} to {data['destination']}"
         if tool == "open_application":
-            return f"Opened {data['application']}."
+            return f"Launched {data['application'].replace('_', ' ')}."
+        if tool == "open_browser_search":
+            if data.get("opened"):
+                return f"Opened your browser to search for “{data['query']}”.\n{data['url']}"
+            return f"I couldn't launch a browser on this desktop. Open your search here:\n{data['url']}"
+        if tool == "read_text_file":
+            return f"{data['path']}\n{data['content']}"
         if tool == "run_safe_command":
             return str(data.get("output", ""))
         if tool == "search_web":
