@@ -7,53 +7,38 @@ from security.path_policy import PathPolicy, PathPolicyError
 from security.url_policy import URLPolicyError, validate_public_url
 
 
-def test_allowed_path_and_traversal(tmp_path: Path) -> None:
-    root = tmp_path / "allowed"
+def test_legacy_roots_do_not_restrict_paths(tmp_path):
+    root = tmp_path / 'legacy'
     root.mkdir()
     policy = PathPolicy([root])
-    assert policy.resolve_allowed(root) == root.resolve()
-    with pytest.raises(PathPolicyError):
-        policy.resolve_allowed(root / ".." / "outside", must_exist=False)
+    assert policy.resolve_allowed(root / '..' / 'outside', must_exist=False) == tmp_path / 'outside'
+    assert policy.resolve_allowed('/etc', must_exist=False) == Path('/etc')
+    assert policy.resolve_allowed('/root/test', must_exist=False) == Path('/root/test')
 
 
-@pytest.mark.parametrize("path", ["/etc/shadow", "/root/test", "/usr/test"])
-def test_arbitrary_system_paths_rejected(tmp_path: Path, path: str) -> None:
-    policy = PathPolicy([tmp_path])
-    with pytest.raises(PathPolicyError):
-        policy.resolve_allowed(path, must_exist=False)
+def test_user_can_access_hidden_and_any_extension(tmp_path):
+    note = tmp_path / '.ssh' / 'sample.key'
+    note.parent.mkdir()
+    note.write_text('test fixture, not a real key')
+    assert PathPolicy().validate_text_file(note, max_size=100) == note
 
 
-def test_sensitive_paths_rejected_even_inside_allowed_root(tmp_path: Path) -> None:
-    ssh = tmp_path / ".ssh"
-    ssh.mkdir()
-    private_key = ssh / "id_rsa"
-    private_key.write_text("secret", encoding="utf-8")
-    policy = PathPolicy([tmp_path])
-    with pytest.raises(PathPolicyError):
-        policy.validate_text_file(private_key, max_size=100)
+def test_symlinks_use_os_permissions(tmp_path):
+    target = tmp_path / 'target'
+    target.mkdir()
+    link = tmp_path / 'link'
+    link.symlink_to(target, target_is_directory=True)
+    assert PathPolicy().resolve_allowed(link) == link
 
 
-def test_symlink_escape_rejected(tmp_path: Path) -> None:
-    root = tmp_path / "allowed"
-    outside = tmp_path / "outside"
-    root.mkdir()
-    outside.mkdir()
-    link = root / "escape"
-    link.symlink_to(outside, target_is_directory=True)
-    with pytest.raises(PathPolicyError):
-        PathPolicy([root]).resolve_allowed(link)
-
-
-def test_oversized_and_unsupported_files(tmp_path: Path) -> None:
-    policy = PathPolicy([tmp_path])
-    large = tmp_path / "large.txt"
-    large.write_text("x" * 11, encoding="utf-8")
-    with pytest.raises(PathPolicyError, match="size limit"):
-        policy.validate_text_file(large, max_size=10)
-    binary = tmp_path / "data.bin"
-    binary.write_bytes(b"data")
-    with pytest.raises(PathPolicyError, match="type"):
-        policy.validate_text_file(binary, max_size=100)
+def test_resource_limits_and_invalid_paths(tmp_path):
+    note = tmp_path / 'note.conf'
+    note.write_text('x' * 11)
+    with pytest.raises(PathPolicyError, match='size limit'):
+        PathPolicy().validate_text_file(note, max_size=10)
+    for invalid in ('', '  ', 'x\x00y'):
+        with pytest.raises(PathPolicyError):
+            PathPolicy().resolve_allowed(invalid, must_exist=False)
 
 
 @pytest.mark.parametrize(

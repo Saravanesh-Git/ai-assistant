@@ -44,7 +44,7 @@ def _handoff_to_project_venv() -> None:
 
 
 async def async_main() -> None:
-    from app.cli.interface import confirm_action, run_cli
+    from app.cli.interface import confirm_action, run_cli, sudo_password
     from app.core.assistant import Assistant
     from app.core.config import load_settings
     from app.core.tool_manager import ToolManager
@@ -54,7 +54,7 @@ async def async_main() -> None:
     settings = load_settings()
     provider = create_provider(settings)
     async with ToolManager(settings) as manager:
-        assistant = Assistant(manager, provider, confirm=confirm_action)
+        assistant = Assistant(manager, provider, confirm=confirm_action, authenticate=sudo_password)
         await run_cli(assistant, manager, settings)
 
 

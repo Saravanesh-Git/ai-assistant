@@ -19,6 +19,12 @@ BANNER = r"""
 """
 
 
+async def sudo_password() -> str:
+    import asyncio
+    import getpass
+    return await asyncio.to_thread(getpass.getpass, "Linux sudo password: ")
+
+
 async def confirm_action(description: str, tool: str, arguments: dict[str, Any]) -> bool:
     print(f"\nA.M.I.G.O. wants to:\n\n{description}\n\nAllow?")
     answer = input("[Y] Yes  [N] No > ")

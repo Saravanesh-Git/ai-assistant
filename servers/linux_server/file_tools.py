@@ -6,6 +6,7 @@ import os
 import shutil
 import stat
 import time
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -100,7 +101,8 @@ def _rename_no_replace(source: Path, destination: Path) -> None:
 
 
 def copy_path_data(source: str, destination: str, policy: PathPolicy) -> dict[str, Any]:
-    source_path = policy.resolve_allowed(source)
+    source_path = policy.resolve_allowed(source, must_exist=False)
+    source_path.lstat()
     target = policy.resolve_allowed(destination, must_exist=False)
     if target == source_path or target.is_relative_to(source_path):
         raise ValueError('Destination must be outside the source')
@@ -108,7 +110,9 @@ def copy_path_data(source: str, destination: str, policy: PathPolicy) -> dict[st
     if target.resolve().is_relative_to(source_path.resolve()):
         raise ValueError('Destination must be outside the source')
     target.parent.mkdir(parents=True, exist_ok=True)
-    if source_path.is_dir():
+    if source_path.is_symlink():
+        os.symlink(os.readlink(source_path), target)
+    elif source_path.is_dir():
         # copytree refuses an existing destination and preserves symlinks.
         shutil.copytree(source_path, target, symlinks=True)
     else:
@@ -118,7 +122,8 @@ def copy_path_data(source: str, destination: str, policy: PathPolicy) -> dict[st
 
 
 def move_path_data(source: str, destination: str, policy: PathPolicy) -> dict[str, Any]:
-    source_path = policy.resolve_allowed(source)
+    source_path = policy.resolve_allowed(source, must_exist=False)
+    source_path.lstat()
     target = policy.resolve_allowed(destination, must_exist=False)
     if source_path == Path('/') or target == Path('/'):
         raise ValueError('A filesystem root cannot be renamed')
@@ -128,9 +133,24 @@ def move_path_data(source: str, destination: str, policy: PathPolicy) -> dict[st
     try:
         _rename_no_replace(source_path, target)
     except OSError as exc:
-        if exc.errno == errno.EXDEV:
-            raise ValueError('Cross-filesystem move: copy to the destination first, then remove the original after checking the copy') from exc
-        raise
+        if exc.errno != errno.EXDEV:
+            raise
+        # Copy into a private staging directory on the destination filesystem,
+        # commit without replacement, then remove the source only after success.
+        stage = Path(tempfile.mkdtemp(prefix='.amigo-move-', dir=target.parent))
+        try:
+            copy_path_data(str(source_path), str(stage / 'payload'), policy)
+            _rename_no_replace(stage / 'payload', target)
+        finally:
+            shutil.rmtree(stage)
+        try:
+            if source_path.is_dir() and not source_path.is_symlink():
+                shutil.rmtree(source_path)
+            else:
+                source_path.unlink()
+        except OSError as cleanup_error:
+            return {'source': str(source_path), 'destination': str(target),
+                    'source_retained': True, 'cleanup_error': str(cleanup_error)}
     return {'source': str(source_path), 'destination': str(target)}
 
 

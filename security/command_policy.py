@@ -1,4 +1,4 @@
-"""Closed allowlists for process execution."""
+"""Built-in application aliases and compatibility command shortcuts."""
 
 from __future__ import annotations
 

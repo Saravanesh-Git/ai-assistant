@@ -1,4 +1,4 @@
-"""Strictly allowlisted process launch operations."""
+"""Desktop launch and direct command execution under the current OS account."""
 
 from __future__ import annotations
 
@@ -76,6 +76,7 @@ def run_safe_command_data(command_id: str) -> dict[str, Any]:
     argv = safe_command(command_id)
     result = subprocess.run(
         list(argv),
+        cwd=Path.home(),
         shell=False,
         capture_output=True,
         text=True,
@@ -88,12 +89,24 @@ def run_safe_command_data(command_id: str) -> dict[str, Any]:
 
 
 def command_requests_admin(command: str, shell: bool = False) -> bool:
-    # Explicit privilege launchers never bypass the app's approval flow, including
-    # a sudo word in an explicitly requested shell pipeline.
-    if shell:
-        return bool(re.search(r'(?<![\w-])(?:sudo|pkexec|doas|su)(?=\s|$)', command))
-    parts = shlex.split(command)
-    return bool(parts and Path(parts[0]).name in {'sudo', 'su', 'pkexec', 'doas'})
+    privileged = {'sudo', 'su', 'pkexec', 'doas'}
+    if not shell:
+        parts = shlex.split(command)
+        return bool(parts and Path(parts[0]).name in privileged)
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=';&|()\n')
+    lexer.whitespace = ' \t\r'
+    lexer.whitespace_split = True
+    command_position = True
+    for token in lexer:
+        if token and all(char in ';&|()\n' for char in token):
+            command_position = True
+        elif command_position:
+            if Path(token).name in privileged:
+                return True
+            if '=' in token or token in {'env', 'command', 'exec', 'nohup', 'if', 'then', 'else', 'do'}:
+                continue
+            command_position = False
+    return False
 
 
 def run_command_data(command: str, cwd: str, shell: bool = False, timeout: int = 120,
@@ -108,6 +121,8 @@ def run_command_data(command: str, cwd: str, shell: bool = False, timeout: int =
         raise ValueError('Enter a command')
     if not shell:
         argv[0] = windows_to_wsl(argv[0])
+        if argv[0].lower().endswith('.exe'):
+            argv[0] = resolve_executable(argv[0]) or argv[0]
     started = time.monotonic()
     stopped = None
     with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
@@ -137,7 +152,7 @@ def run_command_data(command: str, cwd: str, shell: bool = False, timeout: int =
               'returncode': process.returncode, 'stopped': stopped}
     # A failed command can have partial effects. An elevated retry is always
     # presented as a new, explicit approval with that information.
-    if process.returncode and not elevated and re.search(r'permission denied|operation not permitted|must be (?:run as )?root|requires? (?:root|superuser)', error, re.I):
+    if process.returncode and not elevated and re.search(r'permission denied|operation not permitted|must be (?:run as )?(?:root|superuser)|requires? (?:root|superuser)|authentication (?:is )?required|access (?:is )?denied', error, re.I):
         result.update(elevation_required=True,
                       reason='The command reported insufficient permissions. It may have partially completed; approval will rerun this exact command as administrator.')
     return result

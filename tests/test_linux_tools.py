@@ -70,7 +70,7 @@ def test_application_uses_fixed_argv_without_shell() -> None:
     ],
 )
 def test_application_command_injection_rejected(payload: str) -> None:
-    with pytest.raises(CommandPolicyError):
+    with pytest.raises(FileNotFoundError):
         open_application_data(payload)
 
 

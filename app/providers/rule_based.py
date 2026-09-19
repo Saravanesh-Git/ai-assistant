@@ -18,6 +18,6 @@ class RuleBasedProvider(LLMProvider):
     ) -> str:
         return (
             "I'm A.M.I.G.O. I can check your system, battery, and disk; list and read your files; "
-            "create folders and text files; move files and folders; open desktop apps; and search in your browser. Try “show cpu” or "
+            "create, write, find, copy, and move files anywhere your account can access; run commands; open desktop apps; and search in your browser. Try “show cpu” or "
             "“search the web for FastAPI”."
         )

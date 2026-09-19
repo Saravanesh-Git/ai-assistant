@@ -50,9 +50,17 @@ Voice uses the [browser SpeechRecognition API](https://developer.mozilla.org/en-
 | Move | `move demo/notes.txt to demo/ideas.txt` |
 | Predefined commands | `run pwd`, `run date`, `run whoami`, `run uname -r`, `run hostname -I` |
 
-Supported actions execute immediately after a direct voice or text request. **There is no repeated in-app permission prompt by default.** Set `ASSISTANT_CONFIRM_ACTIONS=true` to opt back into one-use, two-minute confirmations. Browser microphone prompts and Windows elevation prompts belong to the browser/OS and cannot be suppressed by the app.
+All normal actions execute immediately as your Linux/WSL account. **Only administrator actions require approval.** The old `ASSISTANT_CONFIRM_ACTIONS` setting is ignored, including when an existing `.env` sets it to `true`.
 
-Commands remain a fixed registry, not an arbitrary shell. Unknown commands explain the available choices; add more commands to `SAFE_COMMANDS` as needed. App launches use fixed argument arrays with `shell=False`. Files remain subject to the configured path policy, and existing files are never overwritten.
+When an operation reports insufficient OS permissions, A.M.I.G.O. presents the exact operation and its arguments for approval. Approving invokes a single-use sudo worker for that operation; the web server stays unprivileged. You can also explicitly request `sudo create folder /opt/demo` or `create folder /opt/demo as administrator`. An approval expires after two minutes and cannot be reused or changed to authorize a different operation.
+
+If sudo accepts an existing credential or a configured passwordless rule, the approved action proceeds immediately. Otherwise the UI requests your Linux sudo password in a masked field. The password is sent only to sudo over stdin, is never included in command arguments/audit logs/history, and is not persisted. Operation data is sent only after authentication succeeds. The CLI uses masked `getpass` input. An account without sudo privileges receives the actual denial; the app does not modify sudoers, ownership, or permissions to bypass it.
+
+With one pending request, you may say **“approve administrator action”** or **“cancel administrator action”**. Passwords must be typed into the masked field; voice pauses when it receives focus. Browser microphone prompts and Windows UAC prompts remain controlled by their respective applications.
+
+`run <command>` executes any installed command with arguments, using `shell=False`. Use **`run shell <command>`** explicitly for pipes, redirects, variables, or shell syntax. `sudo`/`su`/`pkexec`/`doas` launchers request administrator approval before execution. Failed commands that report permission errors offer an approved rerun and explain that the first attempt may have had partial effects. These are direct user commands, not model-generated execution.
+
+Commands run from your Linux home, are non-interactive, and have a configurable timeout (`COMMAND_TIMEOUT_SECONDS`, default 120 seconds) and a 1 MB output cutoff. Interactive editors and installers that require a terminal should be opened in a terminal application. App requests support the built-in aliases, any executable on PATH, and executable paths. `open /path/to/file` uses the desktop's associated application.
 
 ## Windows and WSL
 
@@ -70,15 +78,34 @@ WSL interop must be enabled and the requested application installed. For nonstan
 
 ### File locations
 
-Without an explicit `ASSISTANT_ALLOWED_PATHS`, defaults are the Linux user's Documents, Downloads, Desktop, Pictures, and Projects directories, plus existing standard folders in the current Windows profile on WSL. An explicit list replaces these defaults and is never automatically broadened.
+There is **no path allowlist**. `ASSISTANT_ALLOWED_PATHS` and the old YAML allowed directories no longer restrict access or choose a default directory. Your Linux account can operate anywhere the OS permits: `/`, `/home`, `/tmp`, `/opt`, `/etc`, and mounted Windows drives. Protected locations request sudo approval when necessary.
 
-```dotenv
-ASSISTANT_ALLOWED_PATHS=/home/you/Projects,/mnt/c/Users/YourName/Documents,/mnt/c/Users/YourName/Downloads
+Relative paths start in the **actual Linux home of the account running A.M.I.G.O.** Named aliases include `home`, `root` (meaning `/`), `root home` (`/root`), `Downloads`, and `windows home`. Windows-specific aliases such as `windows Downloads` use the discovered Windows profile. An explicit path always wins. `C:\Users\YourName\Documents\notes.txt` maps to `/mnt/c/Users/YourName/Documents/notes.txt`, and `C:` or `C drive` maps to `/mnt/c`. For custom mount points, use their Linux paths explicitly.
+
+Examples:
+
+```text
+show files in /
+show files in /etc page 2
+create folder reports at /home/yourname/work
+create file /tmp/nested/project/settings.conf with content enabled=true
+create file "meeting notes.txt" in "C:\Users\YourName\Documents"
+find file invoice in /mnt/d
+copy /home/yourname/report.csv to /mnt/c/Users/YourName/Desktop/report.csv
+write file /tmp/settings.conf with content enabled=false
+append file /tmp/settings.conf with content another=value
+run ls -la /opt
+run shell ls /etc | head
+sudo create folder /opt/my-project
 ```
 
-Relative paths use the first configured root. Named aliases such as `Downloads` resolve to configured roots or existing standard subfolders. Windows drive paths such as `C:\Users\YourName\Documents\notes.txt` map to `/mnt/c/Users/YourName/Documents/notes.txt`; they must still be within an allowed root. Custom WSL mount points should use their Linux paths explicitly. Use full paths to disambiguate duplicate folder names. OneDrive or other redirected Windows folders can be included explicitly in the allowed list.
+Creation accepts any filename or extension, including extensionless and hidden files, and creates missing parents. `create file` refuses to overwrite an existing path; `write file` explicitly replaces text, and `append file` appends it. Text is UTF-8; creating a `.pdf` or `.docx` filename does not generate that document format. File content responses and requests remain bounded to prevent browser/resource exhaustion.
 
-Text creation requires an existing parent folder and a supported text extension. Files are limited to 2 MB. Moves take an exact destination path, never overwrite, and must remain on the same filesystem. Configured roots, sensitive files, and directories containing symlinks cannot be moved. Symlink-aware containment and sensitive-file checks apply even when confirmation is off.
+Listings are paginated in groups of 200; broken symlinks and individual metadata errors do not hide the entire directory. `find file NAME in PATH` recursively searches names without following directory symlinks, reports unreadable directories, and stops at a time/result limit with a clear message. Narrow the search or explicitly request administrator execution when needed.
+
+Copy and move accept Linux and mounted Windows destinations. Cross-filesystem moves copy to a temporary staging directory, commit without overwriting, and remove the source only after the copy succeeds. If source removal fails, the response reports the retained source instead of claiming a completed move. Existing destinations are never replaced by copy/move.
+
+**Windows permissions:** [Windows ACLs still apply to mounted drives](https://learn.microsoft.com/en-us/windows/wsl/file-permissions). Linux sudo does not make the Windows account an administrator or override a denied Windows ACL, read-only mount, or locked file. The app reports those failures; native Windows elevation may require Windows UAC.
 
 ## Web searches
 
@@ -137,7 +164,7 @@ The local API binds to `127.0.0.1:8765`, checks Host/Origin, and requires a per-
 ./scripts/healthcheck.sh
 ```
 
-Tests cover routing, direct and optional-confirmed execution, Windows executable discovery, browser URL encoding and launcher failures, provider extension/fallback, API origin/token checks, file containment and overwrite protection, public-web policy, and system tools.
+Tests cover routing, direct execution and exact-operation sudo approvals, Windows executable discovery, browser URL encoding and launcher failures, provider extension/fallback, API origin/token checks, machine-wide paths, overwrite protection, password handshakes, and cross-filesystem moves, public-web policy, and system tools.
 
 Optional browser regression checks use simulated speech and desktop responses; they do not open real applications:
 
@@ -154,7 +181,7 @@ These check persistent wake state, interim/final transcripts, queued commands, r
 - **Microphone blocked:** allow microphone access in the browser's site settings, then click Enable voice. Use Chrome on Windows if the browser has no speech API.
 - **Windows app unavailable:** verify WSL interop, installation, PATH, and Windows profile discovery. `open windows calculator` is a useful first check.
 - **Browser did not open:** use the returned search link; verify `explorer.exe`/`wslview` on WSL or `xdg-open` on a Linux desktop.
-- **Folder rejected:** open the command guide to inspect the allowed roots. Add the intended folder to `.env` and restart. Sensitive paths remain blocked.
+- **Permission denied:** approve the specific administrator request. If sudo is denied, verify that the Linux account can use sudo. On mounted Windows drives, check Windows permissions. Changing `ASSISTANT_ALLOWED_PATHS` is no longer necessary.
 - **Dashboard disconnected:** ensure the backend is running, use `http://localhost:8765`, and refresh after a backend restart.
 - **No AI provider:** expected by default. System, file, app, and browser tools continue to work.
 

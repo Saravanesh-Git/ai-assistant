@@ -1,5 +1,6 @@
 'use strict';
 const $ = id => document.getElementById(id);
+const adminRequests = new Map();
 let token, busy = false, queue = [], voiceState = {enabled: false, awake: false}, statusTimer;
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -50,6 +51,16 @@ function addMessage(text, kind = '', source = '') {
 function enqueue(message, source = 'text') {
   message = message.trim();
   if (!message) return;
+  const control = message.toLowerCase().replace(/[.!?]+$/, '');
+  if (['approve administrator action', 'cancel administrator action'].includes(control)) {
+    if (adminRequests.size !== 1) {
+      addMessage('Use the buttons on the specific administrator request to approve or cancel it.');
+    } else {
+      const request = [...adminRequests.values()][0];
+      request.submit(control.startsWith('approve'));
+    }
+    return;
+  }
   if (!token) {addMessage('The desktop connection is unavailable. Your command was not sent. Reconnect and try again.', 'error'); return;}
   if (queue.length >= 10) {addMessage('The command queue is full. Please wait for the current actions, then repeat your request.', 'error'); return;}
   addMessage(message, 'user', source);
@@ -61,7 +72,9 @@ async function drainQueue() {
   busy = true; updateState();
   const payload = queue.shift();
   try {
-    const response = await fetch('/api/command', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Assistant-Token': token}, body: JSON.stringify(payload)});
+    const requestBody = JSON.stringify(payload);
+    delete payload.password;
+    const response = await fetch('/api/command', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Assistant-Token': token}, body: requestBody});
     const data = await response.json();
     if (!response.ok) {
       if (response.status === 403) {
@@ -71,17 +84,7 @@ async function drainQueue() {
       throw new Error(data.error || 'The request could not be completed.');
     }
     if (data.approval) {
-      const body = addMessage(`${data.description}\n${JSON.stringify(data.arguments, null, 2)}\nConfirmation mode is enabled. Approve within two minutes.`);
-      const actions = document.createElement('div'); actions.className = 'actions';
-      for (const [label, accept] of [['Approve', true], ['Cancel', false]]) {
-        const button = document.createElement('button'); button.textContent = label;
-        button.onclick = () => {
-          actions.querySelectorAll('button').forEach(item => item.disabled = true);
-          queue.push({approval: data.approval, accept}); drainQueue();
-        };
-        actions.append(button);
-      }
-      body.append(actions);
+      showAdministratorRequest(data);
     } else addMessage(data.reply || 'The action returned no response.');
   } catch (error) {
     addMessage(`${error.message} If the connection was interrupted, check the result before repeating the command.`, 'error');
@@ -90,6 +93,48 @@ async function drainQueue() {
     drainQueue();
   }
 }
+function showAdministratorRequest(data) {
+  const body = addMessage(`Administrator access required\n${data.description}\n${data.tool}\n${JSON.stringify(data.arguments, null, 2)}\nThis approval applies only to this action and expires in two minutes.`);
+  const form = document.createElement('form'); form.className = 'admin-approval';
+  let password;
+  if (data.authentication_required) {
+    const label = document.createElement('label'); label.textContent = 'Linux sudo password';
+    password = document.createElement('input'); password.type = 'password';
+    password.autocomplete = 'off'; password.maxLength = 1024;
+    password.setAttribute('aria-label', 'Linux sudo password');
+    password.onfocus = () => {if (voice.enabled) voice.pause();};
+    label.append(password); form.append(label);
+    const note = document.createElement('p');
+    note.textContent = 'Used once for sudo, then discarded. Never say your password aloud. Voice pauses while you enter it.';
+    form.append(note);
+  }
+  const actions = document.createElement('div'); actions.className = 'actions';
+  let used = false;
+  const submit = accept => {
+    if (used) return;
+    if (accept && password && !password.value) {password.focus(); return;}
+    used = true; adminRequests.delete(data.approval); clearTimeout(expiry);
+    form.querySelectorAll('button, input').forEach(item => item.disabled = true);
+    const payload = {approval: data.approval, accept};
+    if (accept && password) payload.password = password.value;
+    if (password) password.value = '';
+    queue.unshift(payload); drainQueue();
+  };
+  for (const [label, accept] of [[data.authentication_required ? 'Authenticate & run' : 'Approve sudo action', true], ['Cancel', false]]) {
+    const button = document.createElement('button'); button.type = 'button'; button.textContent = label;
+    button.onclick = () => submit(accept); actions.append(button);
+  }
+  form.onsubmit = event => {event.preventDefault(); submit(true);};
+  form.append(actions); body.append(form);
+  adminRequests.set(data.approval, {submit});
+  const expiry = setTimeout(() => {
+    used = true; adminRequests.delete(data.approval);
+    form.querySelectorAll('button, input').forEach(item => item.disabled = true);
+    if (password) password.value = '';
+    const note = document.createElement('p'); note.textContent = 'Approval expired. Request the action again.'; form.append(note);
+  }, 120000);
+}
+
 $('composer').onsubmit = event => {
   event.preventDefault();
   const message = $('command').value.trim();
@@ -105,6 +150,8 @@ document.querySelectorAll('[data-draft]').forEach(button => button.onclick = () 
   $('command').value = button.dataset.draft; $('command').focus();
 });
 $('clear').onclick = () => {
+  for (const request of [...adminRequests.values()]) request.submit(false);
+  adminRequests.clear();
   $('messages').replaceChildren();
   addMessage('Command history cleared. Ready for your next request.');
 };
@@ -129,9 +176,10 @@ async function connect() {
     $('desktop-state').textContent = data.windows_available ? 'WINDOWS + WSL' : data.platform === 'Windows + WSL' ? 'WSL ONLY' : 'LINUX';
     $('engine').textContent = data.provider === 'rule_based' ? 'LOCAL RULES' : data.provider.toUpperCase();
     $('tool-count').textContent = String(data.tools.length).padStart(2, '0') + ' CONNECTED';
-    $('action-mode').textContent = data.confirm_actions ? 'CONFIRM FIRST' : 'DIRECT';
+    $('action-mode').textContent = 'ASK FOR ADMIN ONLY';
     $('allowed-paths').replaceChildren();
     for (const path of data.allowed_paths) {const item = document.createElement('li'); item.textContent = path; $('allowed-paths').append(item);}
+    if (data.default_directory) {const item = document.createElement('li'); item.textContent = `Relative paths start in ${data.default_directory}`; $('allowed-paths').append(item);}
     $('notepad-launch').dataset.command = data.platform === 'Windows + WSL' ? 'open windows notepad' : 'open code';
     $('notepad-launch').lastElementChild.textContent = data.platform === 'Windows + WSL' ? 'Notepad' : 'VS Code';
     updateState();

@@ -9,7 +9,8 @@ from app.core.llm import LLMProvider, Message
 from app.core.permissions import PermissionManager
 from app.core.router import IntentRouter
 from app.core.tool_manager import ToolInvocationError, ToolManager, ToolUnavailableError
-from security.command_policy import ALLOWED_APPLICATIONS
+from app.core.elevation import ElevationRequired, AuthenticationRequired, ElevationError, run_elevated
+from app.core.config import Settings
 
 ConfirmCallback = Callable[[str, str, dict[str, Any]], Awaitable[bool]]
 
@@ -23,60 +24,72 @@ class Assistant:
         router: IntentRouter | None = None,
         permissions: PermissionManager | None = None,
         confirm: ConfirmCallback | None = None,
+        authenticate: Callable[[], Awaitable[str]] | None = None,
     ) -> None:
         self.tools = tool_manager
         self.provider = provider
-        configured_paths = getattr(getattr(tool_manager, "settings", None), "allowed_paths", ())
-        self.router = router or IntentRouter(allowed_paths=configured_paths)
-        self.permissions = permissions or PermissionManager(
-            confirm_actions=getattr(getattr(tool_manager, "settings", None), "confirm_actions", False)
-        )
+        self.router = router or IntentRouter()
+        self.permissions = permissions or PermissionManager()
         self.confirm = confirm
+        self.authenticate = authenticate
 
     async def handle(self, user_input: str) -> str:
         route = self.router.route(user_input)
         if route.intent == "empty":
-            return "Please enter a request."
+            return "I'm here. Enter a request."
         if route.intent == "unsafe_path":
-            return "That path is not allowed. Use one of your configured user folders."
-        if route.intent == "unsupported_command":
-            return "Available commands: run pwd, run date, run whoami, run uname -r, run hostname -I. More commands can be added to the command registry."
-        if route.intent == "unsupported_application":
-            return "I can open these applications when installed: " + ", ".join(ALLOWED_APPLICATIONS) + "."
+            return "I couldn't understand that path. Use an absolute Linux path, a Windows drive path, or a path relative to your home."
         if route.tool is None:
             try:
                 return await self.provider.generate([Message("user", user_input)])
             except Exception:
-                return "I couldn't classify that request, and the optional LLM is unavailable."
-
+                return "I couldn't classify that request, and the optional AI provider is unavailable."
         decision = self.permissions.check_permission(route.tool, route.arguments)
         if not decision.allowed:
-            return "That capability is denied by the permission policy."
-        permission_result = "direct_request" if not decision.requires_confirmation else "read_allowed"
-        if decision.requires_confirmation:
-            if self.confirm is None or not await self.confirm(decision.description, route.tool, route.arguments):
-                return "Action cancelled."
-            permission_result = "user_allowed"
-
+            return "That capability is not registered."
         try:
-            data = await self.tools.call(
-                route.tool,
-                route.arguments,
-                permission_result=permission_result,
-            )
+            if route.administrator:
+                raise ElevationRequired(route.tool, route.arguments, "You requested administrator execution.")
+            data = await self.tools.call(route.tool, route.arguments, permission_result="direct_request")
+            if isinstance(data, dict) and data.get("elevation_required"):
+                raise ElevationRequired(route.tool, route.arguments, data.get("reason", "OS permission denied"))
+            return self._format(route.tool, data)
+        except ElevationRequired as proposal:
+            if self.confirm is None:
+                raise
+            description = f"Administrator access required: {proposal.reason}\n{proposal.tool}: {proposal.arguments}"
+            if not await self.confirm(description, proposal.tool, proposal.arguments):
+                return "Administrator action cancelled."
+            try:
+                return await self.execute_approved(proposal.tool, proposal.arguments)
+            except AuthenticationRequired:
+                if self.authenticate is None:
+                    return "sudo requires authentication. Use the browser interface or a terminal with password input."
+                password = await self.authenticate()
+                try:
+                    return await self.execute_approved(proposal.tool, proposal.arguments, password)
+                except AuthenticationRequired:
+                    return "sudo did not accept the password. Request the action again to retry."
+                finally:
+                    password = None
         except ToolUnavailableError:
-            if route.tool == "search_web":
-                return "Web search is unavailable. The local assistant is still functional."
             return f"The {route.tool.replace('_', ' ')} capability is unavailable."
-        except (ToolInvocationError, TimeoutError) as exc:
-            if route.tool == "search_web":
-                return "Web search is unavailable. Check SEARXNG_URL; local tools still work."
-            if route.tool == "list_directory":
-                return f"I couldn't list that directory: {exc}"
+        except (ToolInvocationError, OSError, ValueError, TimeoutError) as exc:
             return f"I couldn't complete that action: {exc}"
         except Exception as exc:
             return f"I couldn't complete that action ({type(exc).__name__})."
-        return self._format(route.tool, data)
+
+    async def execute_approved(self, tool: str, arguments: dict, password: str | None = None) -> str:
+        """Called only with an exact, server-held approval (or CLI confirmation)."""
+        settings = getattr(self.tools, "settings", None) or Settings()
+        try:
+            data = await run_elevated(tool, arguments, settings, password)
+            logger = getattr(self.tools, "logger", None)
+            if logger:
+                logger.info("administrator_action", extra={"tool": tool, "status": "success", "permission_result": "administrator_approved"})
+            return self._format(tool, data)
+        except ElevationError as exc:
+            return f"Administrator action failed: {exc}"
 
     @staticmethod
     def _format(tool: str, data: Any) -> str:
@@ -105,14 +118,39 @@ class Assistant:
             if not entries:
                 return f"{data['path']} is empty."
             lines = [f"Contents of {data['path']}:"]
-            lines.extend(f"  {'[dir]' if item['type'] == 'directory' else '[file]'} {item['name']}" for item in entries)
+            lines.extend(f"  [{item['type']}] {item['name']}" + (f" — {item['error']}" if item.get('error') else '') for item in entries)
+            if data.get('next_offset') is not None:
+                lines.append(f"More entries: show files in \"{data['path']}\" page {data['next_offset'] // 200 + 1}")
             return "\n".join(lines)
         if tool == "create_directory":
             verb = "Created" if data.get("created") else "Already exists"
             return f"{verb}: {data['path']}"
         if tool == "create_text_file":
             return f"Created file: {data['path']}"
+        if tool == "write_text_file":
+            return f"{'Appended to' if data.get('append') else 'Wrote'}: {data['path']}"
+        if tool == "copy_path":
+            return f"Copied {data['source']} to {data['destination']}"
+        if tool == "find_files":
+            lines = [f"Matches under {data['path']}:", *data['matches']]
+            if not data['matches']:
+                lines.append("No matching names found in the scanned directories.")
+            if data.get('skipped'):
+                lines.append(f"Skipped {data['skipped']} unreadable directories. Add 'as administrator' to search them with approval.")
+            if data.get('truncated'):
+                lines.append("Search reached its time/result limit. Search a narrower directory to continue.")
+            return "\n".join(lines)
+        if tool == "open_path":
+            return f"Opened: {data['path']}"
+        if tool == "run_command":
+            result = (data.get('output', '') + data.get('stderr', '')).strip()
+            result += f"\nExit code: {data.get('returncode', 'unknown')}"
+            if data.get('stopped'):
+                result += "\n" + data['stopped']
+            return result.strip()
         if tool == "move_path":
+            if data.get('source_retained'):
+                return f"Copied to {data['destination']}, but could not fully remove the source at {data['source']}: {data['cleanup_error']}. Check both paths before requesting removal."
             return f"Moved {data['source']} to {data['destination']}"
         if tool == "open_application":
             return f"Launched {data['application'].replace('_', ' ')}."

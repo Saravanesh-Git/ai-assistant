@@ -47,8 +47,16 @@ async def main():
             })
         if path == '/api/command':
             data = route.request.post_data_json
-            calls.append(data)
+            calls.append({key: value for key, value in data.items() if key != 'password'})
             await asyncio.sleep(.15)
+            admin = {'kind': 'administrator', 'tool': 'create_directory', 'arguments': {'path': '/root/amigo-test'}}
+            if data.get('message') == 'create folder /root/amigo-test':
+                return await route.fulfill(json={**admin, 'approval': 'admin-proposal', 'description': 'Permission denied: /root'})
+            if data.get('approval') == 'admin-proposal':
+                return await route.fulfill(json={**admin, 'approval': 'admin-auth', 'description': 'Enter your Linux sudo password.', 'authentication_required': True})
+            if data.get('approval') == 'admin-auth':
+                assert data.get('password') == 'mock-password-only'
+                return await route.fulfill(json={'reply': 'Created: /root/amigo-test'})
             return await route.fulfill(json={'reply': 'Completed: ' + data.get('message', '')})
         filename = 'index.html' if path == '/' else path.removeprefix('/static/')
         target = STATIC / filename
@@ -119,6 +127,16 @@ async def main():
         await page.locator('#command').press('Enter')
         await expect(page.locator("#activity")).to_have_text("READY")
         assert await page.locator('#messages img').count() == 0
+        await page.locator('#command').fill('create folder /root/amigo-test')
+        await page.locator('#command').press('Enter')
+        await page.get_by_role('button', name='Approve sudo action').click()
+        password = page.get_by_label('Linux sudo password')
+        await expect(password).to_be_visible()
+        await password.fill('mock-password-only')
+        await page.get_by_role('button', name='Authenticate & run').click()
+        await expect(page.locator('#messages')).to_contain_text('Created: /root/amigo-test')
+        assert await password.input_value() == ''
+        assert 'mock-password-only' not in await page.locator('#messages').inner_text()
         await page.locator('#clear').click()
         for width in (320, 390, 768, 1024, 1440):
             await page.set_viewport_size({'width': width, 'height': 900})

@@ -45,7 +45,7 @@ async def run_elevated(tool: str, arguments: dict, settings: Settings, password:
     process = await asyncio.create_subprocess_exec(
         *argv, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE, env={**os.environ, 'LC_ALL': 'C'},
-        limit=3 * 1024 * 1024,
+        limit=settings.max_file_size * 6 + 65536,
     )
     password_sent = False
     error_text = ''
@@ -106,9 +106,17 @@ async def run_elevated(tool: str, arguments: dict, settings: Settings, password:
             if not task.done():
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        if process.stdin:
+            process.stdin.close()
         if process.returncode is None:
             try:
                 process.terminate()
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
                 pass
-            await process.wait()
+            try:
+                await asyncio.wait_for(process.wait(), 5)
+            except asyncio.TimeoutError:
+                try:
+                    process.kill()
+                except (ProcessLookupError, PermissionError):
+                    pass

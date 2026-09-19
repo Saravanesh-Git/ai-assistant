@@ -1595,3 +1595,26 @@ body:has(dialog[open]) {
     margin-top: 18px;
   }
 }
+
+.admin-approval label {
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+}
+.admin-approval input {
+  width: min(100%, 360px);
+  padding: 10px 12px;
+  background: #07151c;
+  color: var(--text);
+  border: 1px solid #49747c;
+  border-radius: 4px;
+  font: inherit;
+}
+.admin-approval p {
+  color: var(--muted);
+  font-size: 11px;
+}
+.admin-approval input:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 3px;
+}

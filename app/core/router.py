@@ -97,7 +97,7 @@ class IntentRouter:
                 return Route('unsafe_path', None)
             tool = 'copy_path' if match[1].lower() == 'copy' else 'move_path'
             return Route(tool, tool, {'source': str(source), 'destination': str(destination)})
-        match = re.fullmatch(r'(?:list|show)(?:\s+me)?(?:\s+the)?\s+(?:files|folders|contents)(?:\s+(?:in|of|at|under))?(?:\s+(.+?))?(?:\s+page\s+(\d+))?', message, re.I)
+        match = re.fullmatch(r'(?:list|show)(?:\s+me)?(?:\s+the)?\s+(?:files|folders|contents|directory|directories)(?:\s+(?:in|of|at|under))?(?:\s+(.+?))?(?:\s+page\s+(\d+))?', message, re.I)
         if match:
             page = max(1, int(match[2] or 1))
             extra = {'offset': (page - 1) * 200} if page > 1 else {}
@@ -148,8 +148,16 @@ class IntentRouter:
         return Route(tool, tool, {'path': str(path), **arguments}) if path is not None else Route('unsafe_path', None)
 
     def _creation_path(self, value: str) -> Path | None:
-        value = re.sub(r'^at\s+', '', value.strip(), flags=re.I)
-        match = re.fullmatch(r'(\"[^\"]+\"|\'[^\']+\'|.+?)(?:\s+(?:in|at|under)\s+(.+))?', value, re.I)
+        value = value.strip()
+        destination_first = re.fullmatch(r'(?:in|at|under|on)\s+(.+?)\s+(?:named|called)\s+(.+)', value, re.I)
+        if destination_first:
+            parent = self._safe_user_path(destination_first[1])
+            name = destination_first[2].strip().strip('"\'')
+            if parent is None or Path(windows_to_wsl(name)).is_absolute():
+                return None
+            return self._safe_user_path(str(parent / name))
+        value = re.sub(r'^at\s+', '', value, flags=re.I)
+        match = re.fullmatch(r'(\"[^\"]+\"|\'[^\']+\'|.+?)(?:\s+(?:in|at|under|on)\s+(.+))?', value, re.I)
         if not match:
             return None
         name = match[1].strip().strip('\"\'')
@@ -172,7 +180,7 @@ class IntentRouter:
         value = re.sub(r'\s+(?:backslash|forward slash|slash)\s+', '/', value, flags=re.I)
         match = re.fullmatch(r'([a-z])(?:\s+drive|:)(?:[/\\](.*))?', value, re.I)
         if match:
-            value = f'/mnt/{match[1].lower()}/{match[2] or ""}'
+            value = f'/mnt/{match[1].lower()}/{(match[2] or "").replace(chr(92), "/")}'
         value = windows_to_wsl(os.path.expandvars(value))
         lower = value.casefold()
         if lower in self.path_aliases:

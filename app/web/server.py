@@ -17,6 +17,7 @@ from starlette.routing import Route, Mount
 from starlette.staticfiles import StaticFiles
 
 from app.core.assistant import Assistant
+from app.core.elevation import ElevationRequired, AuthenticationRequired
 from app.core.config import load_settings
 from app.core.tool_manager import ToolManager
 from app.providers.factory import create_provider
@@ -25,7 +26,7 @@ from security.desktop import is_wsl, resolve_executable
 STATIC = Path(__file__).parent / "static"
 
 
-def create_app(manager_factory=ToolManager):
+def create_app(manager_factory=ToolManager, *, clock=time.monotonic):
     token = secrets.token_urlsafe(32)
     pending = {}
 
@@ -51,8 +52,9 @@ def create_app(manager_factory=ToolManager):
         return JSONResponse({"token": token, "tools": request.app.state.manager.available_tools,
                              "name": "A.M.I.G.O.", "wake_phrase": "Hey Amigo",
                              "provider": request.app.state.provider.name,
-                             "confirm_actions": settings.confirm_actions,
-                             "allowed_paths": [str(p) for p in settings.allowed_paths],
+                             "confirm_actions": False,
+                             "access_mode": "os_permissions", "default_directory": str(Path.home()),
+                             "allowed_paths": ["/ (all Linux / WSL paths)", "/mnt (mounted Windows drives)"],
                              **request.app.state.desktop})
 
     async def status(request):
@@ -82,41 +84,49 @@ def create_app(manager_factory=ToolManager):
                 raise ValueError()
         except (ValueError, UnicodeError):
             return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-        now = time.monotonic()
+        now = clock()
         for key in list(pending):
             if pending[key][0] < now:
                 del pending[key]
-        approved = None
+        assistant = Assistant(request.app.state.manager, request.app.state.provider)
+
+        def propose(tool, arguments, reason, authentication=False):
+            if len(pending) >= 100:
+                return JSONResponse({"error": "Too many pending administrator requests."}, status_code=429)
+            key = secrets.token_urlsafe(24)
+            # Bind approval to the exact operation and absolute paths, not text
+            # that could be reparsed differently after filesystem changes.
+            pending[key] = (clock() + 120, tool, arguments.copy())
+            return JSONResponse({"approval": key, "kind": "administrator",
+                                 "description": reason, "tool": tool, "arguments": arguments,
+                                 "authentication_required": authentication})
+
         if "approval" in data:
             key = data["approval"]
             entry = pending.pop(key, None) if isinstance(key, str) else None
             if entry is None:
                 return JSONResponse({"error": "Approval expired or already used."}, status_code=409)
             if data.get("accept") is not True:
-                return JSONResponse({"reply": "Action cancelled."})
-            _, message, approved = entry
+                return JSONResponse({"reply": "Administrator action cancelled."})
+            _, tool, arguments = entry
+            password = data.pop("password", None)
+            if password is not None and (not isinstance(password, str) or len(password) > 1024 or "\n" in password or "\r" in password):
+                return JSONResponse({"error": "Invalid password input"}, status_code=400)
+            try:
+                reply = await assistant.execute_approved(tool, arguments, password)
+            except AuthenticationRequired as exc:
+                return propose(tool, arguments, str(exc), authentication=True)
+            finally:
+                password = None
+                body.clear()
         else:
             message = data.get("message")
             if not isinstance(message, str) or not message.strip() or len(message) > 8000:
                 return JSONResponse({"error": "Enter a command of 1–8000 characters."}, status_code=400)
-        proposal = None
-
-        async def confirm(description, tool, arguments):
-            nonlocal proposal
-            if approved == (tool, arguments):
-                return True
-            proposal = (description, tool, arguments.copy())
-            return False
-
-        assistant = Assistant(request.app.state.manager, request.app.state.provider, confirm=confirm)
-        reply = await assistant.handle(message)
-        if proposal:
-            if len(pending) >= 100:
-                return JSONResponse({"error": "Too many pending actions."}, status_code=429)
-            description, tool, arguments = proposal
-            key = secrets.token_urlsafe(24)
-            pending[key] = (now + 120, message, (tool, arguments))
-            return JSONResponse({"approval": key, "description": description, "arguments": arguments})
+            try:
+                reply = await assistant.handle(message)
+            except ElevationRequired as exc:
+                return propose(exc.tool, exc.arguments, exc.reason)
         return JSONResponse({"reply": reply})
 
     app = Starlette(lifespan=lifespan, routes=[Route("/", index), Route("/api/config", config),

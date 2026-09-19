@@ -1,20 +1,19 @@
 application:
   name: "A.M.I.G.O."
   wake_phrase: "Hey Amigo"
-  confirm_actions: false
   lightweight_ram_threshold_gb: 8
   max_concurrent_tools: 2
   conversation_history_limit: 12
 
 filesystem:
-  # Expanded for the current user at runtime.
-  default_allowed_directories:
-    - "~/Documents"
-    - "~/Downloads"
-    - "~/Desktop"
-    - "~/Pictures"
-    - "~/Projects"
+  access: "os_permissions"
+  default_directory: "~"
+  create_missing_parents: true
   max_text_file_size: 2097152
+
+execution:
+  approval: "administrator_only"
+  command_timeout_seconds: 120
 
 web:
   searxng_url: "http://localhost:8080"
