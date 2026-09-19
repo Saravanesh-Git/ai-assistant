@@ -53,6 +53,8 @@ def resolve_executable(name: str) -> str | None:
         return found
     # Fixed candidate directories support WSL installations without Windows PATH import.
     candidates = [Path("/mnt/c/Windows") / name, Path("/mnt/c/Windows/System32") / name]
+    if name == "powershell.exe":
+        candidates.append(Path("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"))
     suffixes = {
         "msedge.exe": "Microsoft/Edge/Application/msedge.exe",
         "chrome.exe": "Google/Chrome/Application/chrome.exe",

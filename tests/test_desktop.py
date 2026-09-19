@@ -1,4 +1,6 @@
 from pathlib import Path
+import base64
+import subprocess
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
@@ -14,15 +16,63 @@ from servers.linux_server.application_tools import open_browser_search_data, ope
 def test_windows_browser_search_uses_encoded_url_without_shell():
     query = 'cats & dogs; $(touch /tmp/nope) "中文"'
     with patch('servers.linux_server.application_tools.is_wsl', return_value=True), \
-         patch('servers.linux_server.application_tools.resolve_executable', return_value='/mnt/c/Windows/explorer.exe'), \
-         patch('servers.linux_server.application_tools.subprocess.Popen', return_value=Mock(wait=Mock(return_value=1))) as launch:
+         patch('servers.linux_server.application_tools.resolve_executable', return_value='powershell.exe'), \
+         patch('servers.linux_server.application_tools.subprocess.run', return_value=Mock(returncode=0)) as launch:
         result = open_browser_search_data(query)
     argv = launch.call_args.args[0]
-    assert argv[0] == '/mnt/c/Windows/explorer.exe'
-    assert len(argv) == 2
-    assert parse_qs(urlsplit(argv[1]).query) == {'q': [query]}
+    assert argv[0] == 'powershell.exe'
+    script = base64.b64decode(argv[-1]).decode('utf-16-le')
+    assert '[Console]::In.ReadToEnd()' in script
+    assert 'Start-Process -FilePath $url -ErrorAction Stop' in script
+    assert query not in script
+    assert parse_qs(urlsplit(launch.call_args.kwargs['input']).query) == {'q': [query]}
     assert launch.call_args.kwargs['shell'] is False
     assert result['opened'] is True
+
+
+@pytest.mark.parametrize('failure', [1, OSError('unavailable'), subprocess.TimeoutExpired('powershell', 10)])
+def test_windows_search_falls_back_to_browser_on_protocol_launch_failure(failure):
+    with patch('servers.linux_server.application_tools.is_wsl', return_value=True), \
+         patch('servers.linux_server.application_tools.resolve_executable',
+               side_effect=lambda name: name if name in {'powershell.exe', 'msedge.exe'} else None) as resolve, \
+         patch('servers.linux_server.application_tools.subprocess.run') as protocol, \
+         patch('servers.linux_server.application_tools.subprocess.Popen',
+               return_value=Mock(wait=Mock(return_value=0))) as browser:
+        if isinstance(failure, Exception):
+            protocol.side_effect = failure
+        else:
+            protocol.return_value = Mock(returncode=failure)
+        assert open_browser_search_data('OpenAI')['opened'] is True
+    assert browser.call_args.args[0] == ['msedge.exe', 'https://www.google.com/search?q=OpenAI']
+    assert 'explorer.exe' not in [call.args[0] for call in resolve.call_args_list]
+
+
+def test_windows_launchers_exiting_with_error_do_not_report_success():
+    with patch('servers.linux_server.application_tools.is_wsl', return_value=True), \
+         patch('servers.linux_server.application_tools.resolve_executable', side_effect=lambda name: name) as resolve, \
+         patch('servers.linux_server.application_tools.subprocess.run', return_value=Mock(returncode=1)), \
+         patch('servers.linux_server.application_tools.subprocess.Popen', return_value=Mock(wait=Mock(return_value=1))):
+        assert open_browser_search_data('OpenAI')['opened'] is False
+    assert [call.args[0] for call in resolve.call_args_list] == [
+        'powershell.exe', 'wslview', 'msedge.exe', 'chrome.exe']
+
+
+def test_wslview_success_uses_url_argument():
+    with patch('servers.linux_server.application_tools.is_wsl', return_value=True), \
+         patch('servers.linux_server.application_tools.resolve_executable',
+               side_effect=lambda name: name if name == 'wslview' else None), \
+         patch('servers.linux_server.application_tools.subprocess.run', return_value=Mock(returncode=0)) as launch:
+        assert open_browser_search_data('OpenAI')['opened'] is True
+    assert launch.call_args.args[0] == ['wslview', 'https://www.google.com/search?q=OpenAI']
+
+
+def test_powershell_discovery_without_windows_path():
+    executable = '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe'
+    with patch('security.desktop.is_wsl', return_value=True), \
+         patch('security.desktop.shutil.which', return_value=None), \
+         patch('security.desktop.windows_profile', return_value=None), \
+         patch.object(Path, 'is_file', lambda path: str(path) == executable):
+        assert resolve_executable('powershell.exe') == executable
 
 
 def test_browser_missing_returns_usable_link():

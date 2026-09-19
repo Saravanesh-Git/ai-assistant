@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import base64
 import os
 import re
 import shlex
@@ -48,12 +49,46 @@ def open_browser_search_data(query: str) -> dict[str, Any]:
         raise ValueError("Search must contain 1–2000 characters")
     query = query.strip()
     url = "https://www.google.com/search?" + urlencode({"q": query})
-    names = ("explorer.exe", "wslview") if is_wsl() else ("xdg-open",)
+    windows = is_wsl()
+    if windows:
+        powershell = resolve_executable("powershell.exe")
+        if powershell:
+            # Use the Windows HTTPS association, not Explorer's folder navigation.
+            # The script is fixed; even long/non-ASCII queries arrive only as URL
+            # data on stdin, never as executable PowerShell or command arguments.
+            script = (
+                "$ErrorActionPreference = 'Stop'; "
+                "try { $url = [Console]::In.ReadToEnd(); "
+                "Start-Process -FilePath $url -ErrorAction Stop; exit 0 } "
+                "catch { exit 1 }"
+            )
+            encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+            try:
+                result = subprocess.run(
+                    [powershell, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+                    input=url, text=True, shell=False, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, timeout=10, check=False,
+                    start_new_session=True, close_fds=True,
+                )
+                if result.returncode == 0:
+                    return {"query": query, "url": url, "opened": True}
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+    names = ("wslview", "msedge.exe", "chrome.exe") if windows else ("xdg-open",)
     for name in names:
         executable = resolve_executable(name)
         if not executable:
             continue
         try:
+            if name == "wslview":
+                result = subprocess.run(
+                    [executable, url], shell=False, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=10, check=False, start_new_session=True, close_fds=True,
+                )
+                if result.returncode == 0:
+                    return {"query": query, "url": url, "opened": True}
+                continue
             process = subprocess.Popen(
                 [executable, url], shell=False, stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -61,13 +96,12 @@ def open_browser_search_data(query: str) -> dict[str, Any]:
             )
             try:
                 code = process.wait(timeout=0.5)
-                # Explorer can return 1 after handing off to an existing window.
-                if code != 0 and not (name == "explorer.exe" and code == 1):
+                if code != 0:
                     continue
             except subprocess.TimeoutExpired:
                 pass
             return {"query": query, "url": url, "opened": True}
-        except OSError:
+        except (OSError, subprocess.TimeoutExpired):
             continue
     return {"query": query, "url": url, "opened": False}
 

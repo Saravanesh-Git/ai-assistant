@@ -109,7 +109,7 @@ Copy and move accept Linux and mounted Windows destinations. Cross-filesystem mo
 
 ## Web searches
 
-Search commands open `https://www.google.com/search?q=...` in the desktop's default browser. Query text is URL-encoded and passed as a single argument. WSL uses Windows Explorer, falling back to `wslview`; Linux uses `xdg-open`. No popup permission or SearXNG service is needed. A clickable search link is also returned; if no browser launcher works, the response explains that and provides the link.
+Search commands open `https://www.google.com/search?q=...` in the desktop's default browser. WSL uses PowerShell to activate the Windows HTTPS association, falling back to `wslview`, then installed Edge or Chrome browsers. Search URLs are never sent to File Explorer. Query text is URL-encoded and passed as data, never executed as shell code. Linux uses `xdg-open`. No popup permission or SearXNG service is needed. If no browser launcher works, the response explains that and provides a clickable search link.
 
 The existing `search_web` MCP capability still supports structured SearXNG results for integrations. It is separate from the browser-opening command. To enable it:
 
@@ -180,7 +180,7 @@ These check persistent wake state, interim/final transcripts, queued commands, r
 
 - **Microphone blocked:** allow microphone access in the browser's site settings, then click Enable voice. Use Chrome on Windows if the browser has no speech API.
 - **Windows app unavailable:** verify WSL interop, installation, PATH, and Windows profile discovery. `open windows calculator` is a useful first check.
-- **Browser did not open:** use the returned search link; verify `explorer.exe`/`wslview` on WSL or `xdg-open` on a Linux desktop.
+- **Browser did not open:** restart the backend after updating. On WSL, verify Windows has a default HTTPS browser and working PowerShell/WSL interoperability; `wslview`, Edge, and Chrome are fallback launchers. On Linux, verify `xdg-open`. If launching fails, use the returned search link.
 - **Permission denied:** approve the specific administrator request. If sudo is denied, verify that the Linux account can use sudo. On mounted Windows drives, check Windows permissions. Changing `ASSISTANT_ALLOWED_PATHS` is no longer necessary.
 - **Dashboard disconnected:** ensure the backend is running, use `http://localhost:8765`, and refresh after a backend restart.
 - **No AI provider:** expected by default. System, file, app, and browser tools continue to work.

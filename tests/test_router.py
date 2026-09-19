@@ -27,6 +27,7 @@ def router() -> IntentRouter:
         ("how much disk space do I have?", "get_disk_usage", {"path": "/"}),
         ("open firefox", "open_application", {"application": "firefox"}),
         ("search Python", "open_browser_search", {"query": "Python"}),
+        ("Search the web for OpenAI", "open_browser_search", {"query": "OpenAI"}),
         (
             "search the web for latest Python news",
             "open_browser_search",

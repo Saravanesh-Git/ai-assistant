@@ -156,7 +156,7 @@ class Assistant:
             return f"Launched {data['application'].replace('_', ' ')}."
         if tool == "open_browser_search":
             if data.get("opened"):
-                return f"Opened your browser to search for “{data['query']}”.\n{data['url']}"
+                return f"Opened your browser to search for “{data['query']}”."
             return f"I couldn't launch a browser on this desktop. Open your search here:\n{data['url']}"
         if tool == "read_text_file":
             return f"{data['path']}\n{data['content']}"
