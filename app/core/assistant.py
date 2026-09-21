@@ -14,7 +14,7 @@ from app.core.elevation import (
     ElevationRequired,
     run_elevated,
 )
-from app.core.llm import LLMProvider, Message, ToolResult
+from app.core.llm import LLMProvider, Message, ProviderError, ToolResult
 from app.core.permissions import PermissionManager
 from app.core.router import IntentRouter
 from app.core.tool_manager import ToolInvocationError, ToolManager, ToolUnavailableError
@@ -66,15 +66,19 @@ class Assistant:
                 return reply
             except ElevationRequired:
                 raise
+            except ProviderError as exc:
+                return self._provider_failure(exc)
             except TimeoutError:
-                return "I couldn't reach Gemini before the request timed out. Your local system commands are still available."
+                return "The AI provider timed out. Your local system commands are still available."
             except Exception:
-                return "I couldn't reach Gemini right now. Your local system commands are still available."
+                return "The AI provider is unavailable. Your local system commands are still available."
         if route.tool is None:
             try:
                 reply = await self.provider.generate([*self.history, Message("user", user_input)])
                 self._remember(user_input, reply)
                 return reply
+            except ProviderError as exc:
+                return self._provider_failure(exc)
             except Exception:
                 return "I couldn't classify that request, and the optional AI provider is unavailable."
         decision = self.permissions.check_permission(route.tool, route.arguments)
@@ -120,7 +124,7 @@ class Assistant:
         # Shell execution is available only when directly and deterministically requested.
         if route.tool == "run_command":
             return bool(_DIRECT_COMMAND.match(user_input.strip()))
-        # Exact router matches stay low latency; natural questions go to Gemini.
+        # Exact router matches stay low latency; natural questions go to the configured model.
         simple = len(user_input.split()) <= 7
         return simple and route.confidence >= 0.9
 
@@ -152,6 +156,15 @@ class Assistant:
                 steps += 1
                 if steps > self.max_tool_steps:
                     return f"I stopped after {self.max_tool_steps} tool calls to avoid an agent loop."
+                if call.argument_error:
+                    results.append(
+                        ToolResult(
+                            call.name or "unknown",
+                            call_id=call.call_id,
+                            error=call.argument_error,
+                        )
+                    )
+                    continue
                 definition = next((item for item in tools if item.get("name") == call.name), None)
                 decision = self.permissions.check_permission(call.name, call.arguments)
                 if definition is None or not decision.allowed:
@@ -179,7 +192,29 @@ class Assistant:
             response = await self.provider.generate_turn(
                 messages, tools, continuation=response.continuation, tool_results=results
             )
-        return response.text or "The request completed, but Gemini returned no text response."
+        return response.text or "The request completed, but the AI provider returned no text response."
+
+    @staticmethod
+    def _provider_failure(exc: ProviderError) -> str:
+        suffix = " Your local system commands are still available."
+        if exc.category == "rate_limit":
+            wait = (
+                f" Try again in about {max(1, round(exc.retry_after))} seconds."
+                if exc.retry_after is not None
+                else " Try again shortly."
+            )
+            return "Groq's rate limit was reached." + wait + suffix
+        if exc.category == "authentication":
+            return "Groq rejected the configured API key. Check GROQ_API_KEY." + suffix
+        if exc.category == "permission":
+            return "The Groq project cannot use the configured model." + suffix
+        if exc.category in {"invalid_model", "invalid_request"}:
+            return str(exc) + suffix
+        if exc.category == "timeout":
+            return "Groq timed out before responding." + suffix
+        if exc.category == "connection":
+            return "I couldn't connect to Groq." + suffix
+        return "Groq is temporarily unavailable." + suffix
 
     async def execute_approved(self, tool: str, arguments: dict, password: str | None = None) -> str:
         """Called only with an exact, server-held approval (or CLI confirmation)."""

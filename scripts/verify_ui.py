@@ -1,7 +1,7 @@
 """Optional browser regression check. Install playwright and its Chromium browser first.
 
 Run: .venv/bin/python scripts/verify_ui.py
-Uses mocked desktop, microphone, and Gemini Live WebSocket adapters; never launches applications.
+Uses mocked desktop, microphone, Groq speech, and WebSocket adapters; never launches applications.
 Screenshots are written to /tmp/amigo-desktop.png and /tmp/amigo-mobile.png.
 """
 import asyncio
@@ -19,7 +19,7 @@ window.WebSocket = class {
   constructor() { this.readyState = 1; window.voiceSockets.push(this); queueMicrotask(() => this.onopen?.()); }
   send(data) { this.lastAudio = data; }
   close() { this.readyState = 3; }
-  emit(type, text='') { this.onmessage?.({data:JSON.stringify({type, text, state:type, message:text})}); }
+  emit(type, text='', utterance_id='') { this.onmessage?.({data:JSON.stringify({type, text, utterance_id, state:type, message:text})}); }
   disconnect() { this.readyState = 3; this.onclose?.(); }
 };
 Object.defineProperty(navigator, 'mediaDevices', {configurable:true, value:{
@@ -32,11 +32,17 @@ window.AudioContext = class {
   createGain() { return {gain:{value:1}, connect(){}, disconnect(){}}; }
   close() {}
 };
+window.URL.createObjectURL = () => 'blob:test-audio';
+window.URL.revokeObjectURL = () => {};
+window.Audio = class {
+  play() { queueMicrotask(() => this.onended?.()); return Promise.resolve(); }
+  pause() {}
+};
 """
 
 
 async def main():
-    calls, errors = [], []
+    calls, speech_calls, errors = [], [], []
 
     async def serve(route):
         path = urlsplit(route.request.url).path
@@ -46,6 +52,7 @@ async def main():
                 'name': 'A.M.I.G.O.', 'wake_phrase': 'Hey Amigo', 'provider': 'rule_based',
                 'confirm_actions': False, 'platform': 'Windows + WSL', 'windows_available': True,
                 'voice_enabled': True, 'voice_available': True, 'voice_output_enabled': True,
+                'voice_output_available': True,
                 'allowed_paths': ['/home/user/Documents', '/mnt/c/Users/User/Downloads'],
             })
         if path == '/api/status':
@@ -67,12 +74,15 @@ async def main():
                 assert data.get('password') == 'mock-password-only'
                 return await route.fulfill(json={'reply': 'Created: /root/amigo-test'})
             return await route.fulfill(json={'reply': 'Completed: ' + data.get('message', '')})
+        if path == '/api/speech':
+            speech_calls.append(route.request.post_data_json['text'])
+            return await route.fulfill(body=b'RIFF-test-audio', content_type='audio/wav')
         filename = 'index.html' if path == '/' else path.removeprefix('/static/')
         target = STATIC / filename
         if target.is_file() and target.resolve().is_relative_to(STATIC):
             content_type = {'.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml'}[target.suffix]
             return await route.fulfill(body=target.read_bytes(), content_type=content_type, headers={
-                'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+                'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
             })
         await route.fulfill(status=404)
 
@@ -96,38 +106,40 @@ async def main():
         assert not await page.locator('#guide').is_visible()
         await page.locator('#mic').click()
         await page.wait_for_function('voiceSockets.length === 1')
-        await page.evaluate("voiceSockets[0].emit('final', 'ambient speech')")
+        await page.evaluate("voiceSockets[0].emit('final', 'ambient speech', 'u0')")
         assert not calls
         await page.locator('#command').fill('my unfinished draft')
         await page.evaluate("voiceSockets[0].emit('interim', 'Hey Amigo show cpu')")
         assert await page.locator('#command').input_value() == 'my unfinished draft'
         assert not calls
-        await page.evaluate("voiceSockets[0].emit('final', 'Hey Amigo')")
+        await page.evaluate("voiceSockets[0].emit('final', 'Hey Amigo', 'u1')")
         assert await page.locator('#reactor').get_attribute('data-state') == 'awake'
-        await page.evaluate("voiceSockets[0].emit('final', 'show cpu'); voiceSockets[0].emit('final', 'check ram'); voiceSockets[0].emit('final', 'run date')")
+        await page.evaluate("voiceSockets[0].emit('final', 'show cpu', 'u2'); voiceSockets[0].emit('final', 'check ram', 'u3'); voiceSockets[0].emit('final', 'run date', 'u4')")
         await expect(page.locator("#activity")).to_have_text("READY")
         assert [call['message'] for call in calls] == ['show cpu', 'check ram', 'run date']
+        assert len(speech_calls) == 3
         assert await page.locator('#command').input_value() == 'my unfinished draft'
         # A repeated final event must never execute an action twice.
-        await page.evaluate("voiceSockets[0].emit('final', 'run date')")
+        await page.evaluate("voiceSockets[0].emit('final', 'run date', 'u4')")
         assert len(calls) == 3
         await page.locator('#command').fill('run whoami')
         await page.locator('#command').press('Enter')
         await expect(page.locator("#activity")).to_have_text("READY")
         assert await page.locator('#reactor').get_attribute('data-state') == 'awake'
+        assert len(speech_calls) == 3
         await page.evaluate("voiceSockets[0].disconnect()")
         await page.wait_for_timeout(1100)
         assert await page.evaluate('voiceSockets.length') == 2
-        await page.evaluate("voiceSockets[1].emit('final', 'search for aurora in the web')")
+        await page.evaluate("voiceSockets[1].emit('final', 'search for aurora in the web', 'u5')")
         await expect(page.locator("#activity")).to_have_text("READY")
         assert calls[-1]['message'] == 'search for aurora in the web'
-        await page.evaluate("voiceSockets[1].emit('final', 'pause listening'); voiceSockets[1].emit('final', 'open calculator')")
+        await page.evaluate("voiceSockets[1].emit('final', 'pause listening', 'u6'); voiceSockets[1].emit('final', 'open calculator', 'u7')")
         assert len(calls) == 5
         assert await page.locator('#pause').is_hidden()
-        await page.evaluate("voiceSockets[1].emit('final', 'Hey Amigo, open calculator')")
+        await page.evaluate("voiceSockets[1].emit('final', 'Hey Amigo, open calculator', 'u8')")
         await expect(page.locator("#activity")).to_have_text("READY")
         assert calls[-1]['message'] == 'open calculator'
-        await page.evaluate("voiceSockets[1].emit('final', 'stop listening')")
+        await page.evaluate("voiceSockets[1].emit('final', 'stop listening', 'u9')")
         assert await page.locator('#mic').get_attribute('aria-pressed') == 'false'
         await page.locator('#mic').click()
         await page.evaluate("voice.stop(); navigator.mediaDevices.getUserMedia = async () => {const error = new Error(); error.name='NotAllowedError'; throw error}; voice.start()")

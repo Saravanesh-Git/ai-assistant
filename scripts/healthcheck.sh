@@ -16,12 +16,15 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-for package in ("mcp", "psutil", "httpx", "google.genai", "jsonschema", "starlette"):
+for package in ("mcp", "psutil", "httpx", "groq", "jsonschema", "starlette"):
     importlib.import_module(package)
 print("Dependencies: OK")
 
 from app.core.config import load_settings
 from app.core.tool_manager import ToolManager
+from app.main import _load_dotenv
+
+_load_dotenv()
 
 async def check_mcp():
     settings = load_settings()
@@ -36,24 +39,32 @@ async def check_mcp():
 asyncio.run(check_mcp())
 
 settings = load_settings()
-if settings.llm_provider == "gemini":
-    if not settings.gemini_api_key:
-        print("Gemini: not configured (local command mode remains available)")
+if settings.llm_provider == "groq":
+    if not settings.groq_api_key:
+        print("Groq: not configured (local command mode remains available)")
     else:
         try:
-            from google import genai
-            with genai.Client(api_key=settings.gemini_api_key) as client:
-                client.models.get(model=settings.gemini_model)
-            print(f"Gemini: configured and reachable ({settings.gemini_model})")
+            from groq import Groq
+            with Groq(api_key=settings.groq_api_key, max_retries=0,
+                      timeout=settings.groq_timeout_seconds) as client:
+                for model in {settings.groq_model, settings.groq_stt_model,
+                              settings.groq_tts_model}:
+                    if model:
+                        client.models.retrieve(model)
+            print(f"Groq: configured and reachable ({settings.groq_model})")
         except Exception:
-            print("Gemini: configured but unavailable; local command mode remains available")
+            print("Groq: configured but unavailable; local command mode remains available")
 else:
-    print(f"Gemini: not enabled (LLM_PROVIDER={settings.llm_provider})")
+    print(f"Groq: not enabled (LLM_PROVIDER={settings.llm_provider})")
 
-if settings.voice_enabled and settings.gemini_api_key:
-    print(f"Voice: configured ({settings.gemini_live_model}, PCM16 mono 16 kHz)")
+if settings.voice_enabled and settings.groq_api_key:
+    print(f"Voice input: configured ({settings.groq_stt_model}, PCM16 mono 16 kHz)")
+    if settings.voice_output_enabled and settings.groq_tts_model and settings.groq_tts_voice:
+        print(f"Voice output: configured ({settings.groq_tts_model}, {settings.groq_tts_voice})")
+    else:
+        print("Voice output: disabled or incomplete")
 elif settings.voice_enabled:
-    print("Voice: enabled but unavailable until GEMINI_API_KEY is configured")
+    print("Voice: enabled but unavailable until GROQ_API_KEY is configured")
 else:
     print("Voice: disabled")
 

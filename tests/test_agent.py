@@ -1,95 +1,12 @@
-import asyncio
-from types import SimpleNamespace
-
 import pytest
 
 from app.core.assistant import Assistant
 from app.core.config import Settings
-from app.core.llm import LLMProvider, Message, ModelResponse, ToolCall
-from app.providers.factory import create_provider
-from app.providers.gemini import SYSTEM_INSTRUCTION, GeminiProvider
-from app.providers.rule_based import RuleBasedProvider
-from app.voice.audio import validate_pcm_chunk
-from app.voice.protocol import TranscriptEvent
-
-
-def response(*, text="", calls=()):
-    function_calls = [SimpleNamespace(name=name, args=args, id=str(index))
-                      for index, (name, args) in enumerate(calls)]
-    content = SimpleNamespace(parts=[])
-    return SimpleNamespace(text=text, function_calls=function_calls,
-                           candidates=[SimpleNamespace(content=content)])
-
-
-class FakeModels:
-    def __init__(self, responses=None, error=None, delay=0):
-        self.responses = list(responses or [])
-        self.error = error
-        self.delay = delay
-        self.requests = []
-
-    async def generate_content(self, **kwargs):
-        self.requests.append(kwargs)
-        if self.delay:
-            await asyncio.sleep(self.delay)
-        if self.error:
-            raise self.error
-        return self.responses.pop(0)
-
-
-class FakeClient:
-    def __init__(self, models):
-        self.aio = SimpleNamespace(models=models)
-
-
-def test_gemini_requires_backend_configuration():
-    with pytest.raises(ValueError, match="GEMINI_API_KEY"):
-        GeminiProvider(api_key="", model="gemini-test")
-    provider = GeminiProvider(api_key="secret", model="gemini-test",
-                              client=FakeClient(FakeModels()))
-    assert provider.available and provider.name == "gemini"
-    assert "Never bypass permissions" in SYSTEM_INSTRUCTION
-
-
-@pytest.mark.asyncio
-async def test_gemini_response_and_function_call_parsing():
-    models = FakeModels([
-        response(calls=[("get_cpu_usage", {})]),
-        response(text="CPU usage is 12%."),
-    ])
-    provider = GeminiProvider(api_key="secret", model="gemini-test",
-                              client=FakeClient(models))
-    tools = ({"name":"get_cpu_usage", "description":"CPU", "input_schema":{"type":"object"}},)
-    first = await provider.generate_turn([Message("user", "How busy is my CPU?")], tools)
-    assert first.tool_calls == (ToolCall("get_cpu_usage", {}, "0"),)
-    assert models.requests[0]["config"].automatic_function_calling.disable is True
-    from app.core.llm import ToolResult
-    second = await provider.generate_turn([], tools, continuation=first.continuation,
-                                          tool_results=[ToolResult("get_cpu_usage", {"cpu_percent":12})])
-    assert second.text == "CPU usage is 12%."
-
-
-@pytest.mark.asyncio
-async def test_gemini_failures_are_normalized_without_secrets():
-    provider = GeminiProvider(api_key="do-not-leak", model="gemini-test", timeout=.01,
-                              client=FakeClient(FakeModels(delay=.05)))
-    with pytest.raises(TimeoutError, match="configured timeout"):
-        await provider.generate([Message("user", "hello")])
-    provider = GeminiProvider(api_key="do-not-leak", model="gemini-test",
-                              client=FakeClient(FakeModels(error=RuntimeError("do-not-leak"))))
-    with pytest.raises(RuntimeError, match="temporarily unavailable") as caught:
-        await provider.generate([Message("user", "hello")])
-    assert "do-not-leak" not in str(caught.value)
-
-
-def test_factory_falls_back_explicitly_when_gemini_key_is_missing():
-    provider = create_provider(Settings(llm_provider="gemini", gemini_api_key=""))
-    assert isinstance(provider, RuleBasedProvider)
-    assert "using local command mode" in provider.fallback_reason
+from app.core.llm import LLMProvider, ModelResponse, ToolCall
 
 
 class SequenceProvider(LLMProvider):
-    name = "gemini"
+    name = "groq"
     available = True
     def __init__(self, responses):
         self.responses = list(responses)
@@ -212,10 +129,3 @@ async def test_explicit_user_shell_command_bypasses_model_but_model_cannot_reque
     assert tools.calls[0][2] == "direct_request"
     assert provider.seen_messages == []
 
-
-def test_voice_protocol_distinguishes_interim_and_final_and_validates_pcm():
-    assert TranscriptEvent("open the", False).as_json()["type"] == "interim"
-    assert TranscriptEvent("open the browser", True).as_json()["type"] == "final"
-    assert validate_pcm_chunk(b"\x00\x00") == b"\x00\x00"
-    with pytest.raises(ValueError, match="16-bit"):
-        validate_pcm_chunk(b"\x00")

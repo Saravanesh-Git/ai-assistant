@@ -64,7 +64,7 @@ function enqueue(message, source = 'text') {
   if (!token) {addMessage('The desktop connection is unavailable. Your command was not sent. Reconnect and try again.', 'error'); return;}
   if (queue.length >= 10) {addMessage('The command queue is full. Please wait for the current actions, then repeat your request.', 'error'); return;}
   addMessage(message, 'user', source);
-  queue.push({message});
+  queue.push({message, source});
   drainQueue();
 }
 async function drainQueue() {
@@ -72,8 +72,9 @@ async function drainQueue() {
   busy = true; activityPhase = 'THINKING'; updateState();
   const payload = queue.shift();
   try {
-    const requestBody = JSON.stringify(payload);
-    delete payload.password;
+    const {source = 'text', ...commandPayload} = payload;
+    const requestBody = JSON.stringify(commandPayload);
+    delete commandPayload.password; delete payload.password;
     const response = await fetch('/api/command', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Assistant-Token': token}, body: requestBody});
     const data = await response.json();
     if (!response.ok) {
@@ -85,8 +86,15 @@ async function drainQueue() {
     }
     if (data.approval) {
       activityPhase = 'EXECUTING';
-      showAdministratorRequest(data);
-    } else addMessage(data.reply || 'The action returned no response.');
+      showAdministratorRequest(data, source);
+    } else {
+      const reply = data.reply || 'The action returned no response.';
+      addMessage(reply);
+      if (source === 'voice' && voice.outputAvailable) {
+        activityPhase = 'SPEAKING'; updateState();
+        await voice.speak(reply);
+      }
+    }
   } catch (error) {
     addMessage(`${error.message} If the connection was interrupted, check the result before repeating the command.`, 'error');
   } finally {
@@ -94,7 +102,7 @@ async function drainQueue() {
     drainQueue();
   }
 }
-function showAdministratorRequest(data) {
+function showAdministratorRequest(data, source = 'text') {
   const body = addMessage(`Administrator access required\n${data.description}\n${data.tool}\n${JSON.stringify(data.arguments, null, 2)}\nThis approval applies only to this action and expires in two minutes.`);
   const form = document.createElement('form'); form.className = 'admin-approval';
   let password;
@@ -119,7 +127,7 @@ function showAdministratorRequest(data) {
     const payload = {approval: data.approval, accept};
     if (accept && password) payload.password = password.value;
     if (password) password.value = '';
-    queue.unshift(payload); drainQueue();
+    queue.unshift({...payload, source}); drainQueue();
   };
   for (const [label, accept] of [[data.authentication_required ? 'Authenticate & run' : 'Approve sudo action', true], ['Cancel', false]]) {
     const button = document.createElement('button'); button.type = 'button'; button.textContent = label;
@@ -176,7 +184,7 @@ async function connect() {
     $('platform').textContent = `${data.platform} · ${data.platform === 'Windows + WSL' ? 'WSL vitals' : 'Local machine'}`;
     $('desktop-state').textContent = data.windows_available ? 'WINDOWS + WSL' : data.platform === 'Windows + WSL' ? 'WSL ONLY' : 'LINUX';
     $('engine').textContent = data.provider === 'rule_based' ? 'LOCAL RULES' : data.provider.toUpperCase();
-    voice.configure({token, available:data.voice_available});
+    voice.configure({token, available:data.voice_available, outputAvailable:data.voice_output_available});
     $('voice-connection').textContent = data.voice_available ? (voice.connected ? 'CONNECTED' : 'READY') : 'NOT CONFIGURED';
     if (data.provider_fallback && !fallbackShown) {addMessage(`AI provider unavailable. Using local command mode. ${data.provider_fallback}`, 'error'); fallbackShown = true;}
     $('tool-count').textContent = String(data.tools.length).padStart(2, '0') + ' CONNECTED';

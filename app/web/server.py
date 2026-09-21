@@ -12,7 +12,7 @@ from pathlib import Path
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse
+from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 from starlette.websockets import WebSocket, WebSocketDisconnect
@@ -22,32 +22,59 @@ from app.core.config import load_settings
 from app.core.elevation import AuthenticationRequired, ElevationRequired
 from app.core.tool_manager import ToolManager
 from app.providers.factory import create_provider
-from app.voice import GeminiLiveSession, VoiceUnavailableError
+from app.voice import BufferedVoiceSession, GroqSpeechProvider, SpeechError, VoiceUnavailableError
 from app.voice.protocol import error_event, status_event
 from security.desktop import is_wsl, resolve_executable
 
 STATIC = Path(__file__).parent / "static"
 
 
-def create_app(manager_factory=ToolManager, *, clock=time.monotonic, voice_factory=GeminiLiveSession):
+def create_app(
+    manager_factory=ToolManager,
+    *,
+    clock=time.monotonic,
+    voice_factory=BufferedVoiceSession,
+    speech_factory=GroqSpeechProvider,
+):
     token = secrets.token_urlsafe(32)
     pending = {}
 
     @asynccontextmanager
     async def lifespan(app):
         settings = load_settings()
-        provider = await asyncio.to_thread(create_provider, settings)
-        async with manager_factory(settings) as manager:
-            app.state.manager = manager
-            app.state.provider = provider
-            app.state.assistant = Assistant(manager, provider)
-            app.state.command_lock = asyncio.Lock()
-            app.state.desktop = {
-                "platform": "Windows + WSL" if is_wsl() else platform.system(),
-                "windows_available": bool(is_wsl() and resolve_executable("explorer.exe")),
-            }
-            yield
-        pending.clear()
+        provider = create_provider(settings)
+        speech = None
+        if settings.voice_enabled and settings.groq_api_key and settings.groq_stt_model:
+            try:
+                speech = speech_factory(
+                    api_key=settings.groq_api_key,
+                    stt_model=settings.groq_stt_model,
+                    tts_model=settings.groq_tts_model,
+                    tts_voice=settings.groq_tts_voice,
+                    timeout=settings.groq_timeout_seconds,
+                    max_retries=settings.groq_max_retries,
+                )
+            except (ImportError, ValueError):
+                speech = None
+        try:
+            async with manager_factory(settings) as manager:
+                app.state.manager = manager
+                app.state.provider = provider
+                app.state.speech = speech
+                app.state.assistant = Assistant(manager, provider)
+                app.state.command_lock = asyncio.Lock()
+                app.state.speech_lock = asyncio.Lock()
+                app.state.voice_socket = None
+                app.state.desktop = {
+                    "platform": "Windows + WSL" if is_wsl() else platform.system(),
+                    "windows_available": bool(is_wsl() and resolve_executable("explorer.exe")),
+                }
+                yield
+        finally:
+            pending.clear()
+            await provider.aclose()
+            if speech is not None:
+                await speech.aclose()
 
     async def index(request):
         return FileResponse(STATIC / "index.html")
@@ -60,8 +87,14 @@ def create_app(manager_factory=ToolManager, *, clock=time.monotonic, voice_facto
                              "provider_fallback": getattr(request.app.state.provider, "fallback_reason", None),
                              "requested_provider": settings.llm_provider,
                              "voice_enabled": settings.voice_enabled,
-                             "voice_available": bool(settings.voice_enabled and settings.gemini_api_key),
+                             "voice_available": bool(settings.voice_enabled and request.app.state.speech),
                              "voice_output_enabled": settings.voice_output_enabled,
+                             "voice_output_available": bool(
+                                 settings.voice_output_enabled
+                                 and request.app.state.speech
+                                 and settings.groq_tts_model
+                                 and settings.groq_tts_voice
+                             ),
                              "confirm_actions": False,
                              "access_mode": "os_permissions", "default_directory": str(Path.home()),
                              "allowed_paths": ["/ (all Linux / WSL paths)", "/mnt (mounted Windows drives)"],
@@ -141,6 +174,48 @@ def create_app(manager_factory=ToolManager, *, clock=time.monotonic, voice_facto
                 return propose(exc.tool, exc.arguments, exc.reason)
         return JSONResponse({"reply": reply})
 
+    async def speech(request: Request):
+        if request.headers.get("x-assistant-token") != token:
+            return JSONResponse({"error": "Invalid session token. Reload the page."}, status_code=403)
+        if request.headers.get("content-type", "").split(";")[0] != "application/json":
+            return JSONResponse({"error": "JSON required"}, status_code=415)
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 8192:
+                return JSONResponse({"error": "Speech request too large"}, status_code=413)
+        try:
+            data = json.loads(body)
+            text = data.get("text") if isinstance(data, dict) else None
+        except (ValueError, UnicodeError):
+            text = None
+        if not isinstance(text, str) or not text.strip():
+            return JSONResponse({"error": "Enter a response to speak."}, status_code=400)
+        if len(text) > 4000:
+            return JSONResponse(
+                {"error": "This response is too long to speak; it remains available as text."},
+                status_code=413,
+            )
+        settings = request.app.state.manager.settings
+        provider = request.app.state.speech
+        if not settings.voice_output_enabled or provider is None:
+            return JSONResponse({"error": "Voice output is unavailable."}, status_code=409)
+        try:
+            async with request.app.state.speech_lock:
+                audio = await provider.synthesize(text)
+        except SpeechError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=503)
+        except Exception:  # noqa: BLE001 - text already succeeded; speech is optional
+            return JSONResponse(
+                {"error": "Voice output failed; the response remains available as text."},
+                status_code=503,
+            )
+        return Response(
+            audio.data,
+            media_type=audio.media_type,
+            headers={"Cache-Control": "no-store"},
+        )
+
     async def voice(websocket: WebSocket):
         host = websocket.headers.get("host", "")
         origin = websocket.headers.get("origin")
@@ -155,11 +230,21 @@ def create_app(manager_factory=ToolManager, *, clock=time.monotonic, voice_facto
             await websocket.send_json(error_event("Voice is disabled in configuration.", recoverable=False))
             await websocket.close(code=1000)
             return
+        if websocket.app.state.speech is None:
+            await websocket.send_json(error_event("Voice is not configured.", recoverable=False))
+            await websocket.close(code=1000)
+            return
+        previous = websocket.app.state.voice_socket
+        websocket.app.state.voice_socket = websocket
+        if previous is not None and previous is not websocket:
+            try:
+                await previous.close(code=1012)
+            except RuntimeError:
+                pass
         try:
-            session = voice_factory(api_key=settings.gemini_api_key,
-                                    model=settings.gemini_live_model)
+            session = voice_factory(speech=websocket.app.state.speech)
             async with session:
-                await websocket.send_json(status_event("connected", "Voice connected"))
+                await websocket.send_json(status_event("listening", "Voice ready"))
 
                 async def send_audio():
                     try:
@@ -188,13 +273,13 @@ def create_app(manager_factory=ToolManager, *, clock=time.monotonic, voice_facto
                             event = next_event.result()
                         except StopAsyncIteration:
                             break
-                        await websocket.send_json(event.as_json())
+                        await websocket.send_json(event)
                 finally:
                     sender.cancel()
                     await asyncio.gather(sender, return_exceptions=True)
         except WebSocketDisconnect:
             pass
-        except (VoiceUnavailableError, ValueError) as exc:
+        except (VoiceUnavailableError, SpeechError, ValueError) as exc:
             try:
                 await websocket.send_json(error_event(str(exc), recoverable=True))
             except (RuntimeError, WebSocketDisconnect):
@@ -202,12 +287,14 @@ def create_app(manager_factory=ToolManager, *, clock=time.monotonic, voice_facto
         except Exception:
             try:
                 await websocket.send_json(error_event(
-                    "Gemini Live disconnected. Voice will reconnect; text is still available.",
+                    "Voice disconnected. It will reconnect; text is still available.",
                     recoverable=True,
                 ))
             except (RuntimeError, WebSocketDisconnect):
                 pass
         finally:
+            if websocket.app.state.voice_socket is websocket:
+                websocket.app.state.voice_socket = None
             try:
                 await websocket.close()
             except RuntimeError:
@@ -216,6 +303,7 @@ def create_app(manager_factory=ToolManager, *, clock=time.monotonic, voice_facto
     app = Starlette(lifespan=lifespan, routes=[Route("/", index), Route("/api/config", config),
         Route("/api/status", status),
         Route("/api/command", command, methods=["POST"]),
+        Route("/api/speech", speech, methods=["POST"]),
         WebSocketRoute("/api/voice", voice),
         Mount("/static", StaticFiles(directory=STATIC), name="static")])
 
@@ -232,6 +320,7 @@ def create_app(manager_factory=ToolManager, *, clock=time.monotonic, voice_facto
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self'; style-src 'self'; "
             "connect-src 'self' ws://localhost:8765 ws://127.0.0.1:8765; "
+            "media-src 'self' blob:; "
             "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
         )
         return response

@@ -22,9 +22,13 @@ web:
   max_search_results: 10
 
 llm:
-  provider: "gemini"
-  gemini_model: "gemini-3.8-flash"
-  gemini_live_model: "gemini-3.5-transcribe-live"
+  provider: "groq"
+  groq_model: "llama-3.3-70b-versatile"
+  groq_stt_model: "whisper-large-v3-turbo"
+  groq_tts_model: "canopylabs/orpheus-v1-english"
+  groq_tts_voice: "troy"
+  groq_timeout_seconds: 60
+  groq_max_retries: 1
   max_agent_tool_steps: 6
   ollama_model: ""
 

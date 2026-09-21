@@ -1,3 +1,4 @@
+from typing import ClassVar
 from unittest.mock import Mock, patch
 
 import pytest
@@ -5,6 +6,7 @@ from starlette.testclient import TestClient
 
 from app.core.router import IntentRouter
 from app.voice.protocol import TranscriptEvent
+from app.voice.service import SpeechAudio
 from app.web.server import create_app
 from security.path_policy import PathPolicy
 from servers.linux_server.application_tools import open_application_data
@@ -13,7 +15,7 @@ from servers.linux_server.file_tools import create_text_file_data, move_path_dat
 
 class Manager:
     available_tools = ('create_directory',)
-    calls = []
+    calls: ClassVar[list] = []
     def __init__(self, settings):
         self.settings = settings
         self.calls = []
@@ -27,10 +29,9 @@ class Manager:
 
 
 class FakeVoice:
-    instances = []
-    def __init__(self, *, api_key, model):
-        self.api_key_received = bool(api_key)
-        self.model = model
+    instances: ClassVar[list] = []
+    def __init__(self, *, speech):
+        self.speech = speech
         self.audio = []
         self.ended = False
         self.__class__.instances.append(self)
@@ -39,8 +40,19 @@ class FakeVoice:
     async def send_audio(self, chunk): self.audio.append(chunk)
     async def end_audio(self): self.ended = True
     async def events(self):
-        yield TranscriptEvent('open the', False)
-        yield TranscriptEvent('open the browser', True)
+        yield TranscriptEvent('open the', False).as_json()
+        yield TranscriptEvent('open the browser', True, 'test:1').as_json()
+
+
+class FakeSpeech:
+    instances: ClassVar[list] = []
+    def __init__(self, **kwargs):
+        self.api_key_received = bool(kwargs['api_key'])
+        self.closed = False
+        self.__class__.instances.append(self)
+    async def transcribe(self, wav_bytes, utterance_id): return 'open the browser'
+    async def synthesize(self, text): return SpeechAudio(b'RIFF-test-audio')
+    async def aclose(self): self.closed = True
 
 
 def test_file_creation_and_moves(tmp_path):
@@ -102,24 +114,36 @@ def test_web_direct_actions_and_config(monkeypatch):
         assert client.post('/api/command', headers=headers, json={'message': 'x' * 8001}).status_code == 400
         assert client.post('/api/command', headers=headers, json={'message': 'x' * 17000}).status_code == 413
         assert client.post('/api/command', headers=headers, content='text').status_code == 415
+        assert client.post('/api/speech', headers=headers, json={'text':'hello'}).status_code == 409
+        assert client.post('/api/speech', json={'text':'hello'}).status_code == 403
         assert 'A.M.I.G.O.' in client.get('/').text
 
 
 def test_live_voice_websocket_is_backend_authenticated_and_separates_transcripts(monkeypatch):
     monkeypatch.setenv('VOICE_ENABLED', 'true')
-    monkeypatch.setenv('GEMINI_API_KEY', 'backend-only-secret')
+    monkeypatch.setenv('GROQ_API_KEY', 'backend-only-secret')
     FakeVoice.instances.clear()
-    app = create_app(Manager, voice_factory=FakeVoice)
+    FakeSpeech.instances.clear()
+    app = create_app(Manager, voice_factory=FakeVoice, speech_factory=FakeSpeech)
     with TestClient(app, base_url='http://localhost:8765') as client:
         config = client.get('/api/config').json()
         assert config['voice_available'] is True
         assert 'backend-only-secret' not in str(config)
+        headers = {'x-assistant-token': config['token']}
         with client.websocket_connect(
             f"/api/voice?token={config['token']}",
             headers={"host":"localhost:8765", "origin":"http://localhost:8765"},
         ) as socket:
-            assert socket.receive_json()['state'] == 'connected'
+            assert socket.receive_json()['state'] == 'listening'
             socket.send_bytes(b'\x00\x00')
             assert socket.receive_json() == {'type':'interim', 'text':'open the'}
-            assert socket.receive_json() == {'type':'final', 'text':'open the browser'}
-    assert FakeVoice.instances[0].api_key_received is True
+            assert socket.receive_json() == {
+                'type':'final', 'text':'open the browser', 'utterance_id':'test:1'
+            }
+        audio = client.post('/api/speech', headers=headers, json={'text':'Done'})
+        assert audio.status_code == 200
+        assert audio.headers['content-type'].startswith('audio/wav')
+        assert audio.content == b'RIFF-test-audio'
+        assert client.post('/api/speech', headers=headers, json={'text':''}).status_code == 400
+        assert client.post('/api/speech', headers=headers, json={'text':'x' * 4001}).status_code == 413
+    assert FakeSpeech.instances[0].api_key_received is True

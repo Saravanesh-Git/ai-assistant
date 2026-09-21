@@ -53,9 +53,12 @@ async def async_main() -> None:
     _load_dotenv()
     settings = load_settings()
     provider = create_provider(settings)
-    async with ToolManager(settings) as manager:
-        assistant = Assistant(manager, provider, confirm=confirm_action, authenticate=sudo_password)
-        await run_cli(assistant, manager, settings)
+    try:
+        async with ToolManager(settings) as manager:
+            assistant = Assistant(manager, provider, confirm=confirm_action, authenticate=sudo_password)
+            await run_cli(assistant, manager, settings)
+    finally:
+        await provider.aclose()
 
 
 def main() -> None:

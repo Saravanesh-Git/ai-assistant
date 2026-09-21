@@ -1,6 +1,6 @@
 # A.M.I.G.O.
 
-**Assistant for Managing Information & General Operations.** A Gemini-powered personal command center for Linux and Windows through WSL. Gemini understands natural language and chooses actions; the existing MCP servers remain the only execution layer. Local deterministic command mode remains available without an API key, GPU, or local model.
+**Assistant for Managing Information & General Operations.** A Groq-powered personal command center for Linux and Windows through WSL. Groq handles conversation and chooses declared actions; the existing MCP servers remain the only execution layer. Local deterministic command mode remains available without an API key, GPU, or local model.
 
 The browser UI features a responsive cyan HUD, an animated assistant core, real system readings, quick app launches, and a shared text/voice command stream. Animations respect your reduced-motion preference.
 
@@ -36,9 +36,9 @@ local-assistant-ui            # browser interface, after installation
 
 Speech transcripts appear below the command input without overwriting your typed draft. Final voice requests and typed requests share an ordered queue, so a follow-up request can wait for an action already running. Interim speech never executes. Enter sends text; Shift+Enter inserts a newline. The command guide lists examples and your configured file locations.
 
-Voice captures mono microphone audio in the browser, converts it to 16-bit PCM at 16 kHz, and streams small chunks over a local authenticated WebSocket. The Python backend holds the API key and forwards audio to Gemini Live for interim and final transcription. The wake/awake/pause state machine runs separately in the browser; only final transcripts execute. The old browser `SpeechRecognition` API is no longer used. Keep the tab open: browser suspension and device sleep can still interrupt a web microphone. Voice reconnects with bounded retries and text remains available.
+Voice captures mono microphone audio in the browser, converts it to 16-bit PCM at 16 kHz, and streams small frames over a local authenticated WebSocket. The backend detects complete utterances, creates an in-memory WAV, and sends one request per utterance to Groq Whisper. Whisper is file-based, so the UI shows recording and transcribing states followed by a final transcript rather than fabricated live partial text. The wake/awake/pause state machine remains in the browser and only finalized utterances execute.
 
-The initial voice implementation prioritizes Gemini Live input transcription and reliable text responses. `VOICE_OUTPUT_ENABLED` is reserved for the optional native-audio playback phase; this version does not yet send Gemini output audio to the browser, so responses remain visible as text even when that setting is `true`.
+For voice-originated commands, the text response appears first and optional Groq Orpheus speech plays afterward. The microphone remains enabled but stops forwarding PCM during playback to prevent feedback. TTS errors leave the text response intact. Keep the tab open: browser suspension and device sleep can interrupt a web microphone. Voice reconnects with bounded retries and text remains available.
 
 ## Commands
 
@@ -122,29 +122,34 @@ docker compose up -d searxng
 
 Public-page fetch retains scheme, DNS/IP, redirect, timeout, MIME type, and response-size validation. A configured SearXNG instance is operator-trusted and may intentionally be local.
 
-## Gemini setup
+## Hybrid Groq setup
 
-1. Create an API key in [Google AI Studio](https://aistudio.google.com/app/apikey).
+1. Create an API key in the [Groq Console](https://console.groq.com/keys).
 2. Copy `.env.example` to `.env` if needed.
-3. Set the provider and key:
+3. Configure text, transcription, and speech models:
 
 ```dotenv
-LLM_PROVIDER=gemini
-GEMINI_API_KEY=your-key
-GEMINI_MODEL=gemini-3.8-flash
-GEMINI_LIVE_MODEL=gemini-3.5-transcribe-live
+LLM_PROVIDER=groq
+GROQ_API_KEY=your-key
+GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_STT_MODEL=whisper-large-v3-turbo
+GROQ_TTS_MODEL=canopylabs/orpheus-v1-english
+GROQ_TTS_VOICE=troy
+GROQ_TIMEOUT_SECONDS=60
+GROQ_MAX_RETRIES=1
+VOICE_ENABLED=true
+VOICE_OUTPUT_ENABLED=true
 ```
 
-4. Restart A.M.I.G.O. and test `Can you tell me whether my laptop is low on memory?`
-5. Open the browser UI, enable voice, and say `Hey Amigo, check my RAM usage.`
+Restart A.M.I.G.O., try `Can you tell me whether my laptop is low on memory?`, then enable voice and say `Hey Amigo, check my RAM usage.` Model IDs remain configuration values because Groq can add, restrict, or retire models. Current capabilities are documented in [Groq models](https://console.groq.com/docs/models), [speech to text](https://console.groq.com/docs/speech-to-text), and [text to speech](https://console.groq.com/docs/text-to-speech).
 
-Never commit `.env` or an API key. The key stays in backend configuration and is never returned by the API, embedded in JavaScript, included in tool arguments, or written to audit logs. Model names are configuration values because Google may add or retire models.
+Never commit `.env` or an API key. The key stays in backend configuration and is never returned by the API, embedded in JavaScript, included in tool arguments, passed to MCP subprocesses, or written to audit logs. Audio is buffered in memory, capped at 20 seconds per utterance, and discarded after transcription. Groq bills a minimum duration for short STT requests; the local silence detector suppresses empty clips and does not send every browser audio frame separately.
 
-Gemini can answer directly, ask for clarification, or request one or more declared MCP functions. The core validates every name and JSON schema, checks the permission registry, invokes the existing MCP client, and returns the result to Gemini. A request is limited by `MAX_AGENT_TOOL_STEPS` (default 6). Model-generated arbitrary shell execution is unavailable: `run_command` is omitted from Gemini's tool catalog and remains available only as an explicit deterministic user command.
+Groq can answer directly, ask for clarification, or request one or more declared local functions. The core validates every name and JSON schema, checks the permission registry, invokes the existing MCP client, and returns results using Groq tool-call IDs. A request is limited by `MAX_AGENT_TOOL_STEPS` (default 6). Groq built-in search, code execution, and remote MCP are not enabled. Model-generated arbitrary shell execution remains unavailable: `run_command` is hidden from the model and available only as an explicit deterministic user command.
 
-Short conversation history is kept only in memory for follow-ups such as “Is that high?”. Restarting clears it. Prompts, tool arguments, file contents, keys, and passwords are not written to the metadata-only audit log. File contents are offered to Gemini only for an explicit request to read, review, analyze, explain, or summarize a file.
+Short conversation history is kept only in memory for follow-ups such as “Is that high?”. Restarting clears it. Prompts, tool arguments, file contents, keys, passwords, audio, and transcripts are not written to the metadata-only audit log. File contents are offered to the model only for an explicit request to read, review, analyze, explain, or summarize a file.
 
-If Gemini cannot initialize, A.M.I.G.O. visibly falls back to `rule_based` local command mode. Existing deterministic system, file, application, browser, and explicit shell commands continue to work. Optional Ollama remains available for direct chat responses:
+If Groq cannot initialize, A.M.I.G.O. visibly falls back to `rule_based` local command mode. Deterministic system, file, application, browser, and explicit shell commands continue to work. Runtime rate limits and transient failures are retried once at most; authentication and invalid-model errors are not retried. Optional Ollama remains available for direct chat responses:
 
 ```bash
 LLM_PROVIDER=ollama OLLAMA_MODEL=your-model .venv/bin/python -m app.web.server
@@ -153,13 +158,13 @@ LLM_PROVIDER=ollama OLLAMA_MODEL=your-model .venv/bin/python -m app.web.server
 Ollama must already be installed and configured. A.M.I.G.O. never starts it or downloads models.
 
 ```text
-Text → Assistant core → Gemini reasoning → validated MCP calls → Linux/Web MCP servers
-Voice → PCM WebSocket → Gemini Live transcription → Assistant core → the same reasoning and MCP path
+Text → Assistant core → Groq reasoning → validated local MCP calls → response
+Voice → buffered PCM WebSocket → Groq Whisper → the same Assistant core → Groq TTS → browser audio
 ```
 
-The deterministic router remains a fast path for simple commands and the fallback when AI is unavailable. The tool manager discovers independent stdio MCP servers and exposes their names, descriptions, and input schemas to Gemini. To add a capability, implement and validate it in its server, decorate it with `@mcp.tool()`, classify it in `app/core/permissions.py`, and add a deterministic route if appropriate. Unknown tools remain denied.
+The deterministic router remains the fast path for simple commands and the fallback when AI is unavailable. The tool manager discovers independent stdio MCP servers and exposes their names, descriptions, and input schemas to Groq. To add a capability, implement and validate it in its server, decorate it with `@mcp.tool()`, classify it in `app/core/permissions.py`, and add a deterministic route if appropriate. Unknown tools remain denied.
 
-The local API binds to `127.0.0.1:8765`, checks Host/Origin, and requires a per-process token for commands and telemetry. Keep it on loopback rather than exposing it through a public tunnel. Run the assistant as your normal user.
+The local API binds to `127.0.0.1:8765`, checks Host and Origin, and requires a per-process token for commands, telemetry, voice, and speech output. Keep it on loopback rather than exposing it through a public tunnel. Run the assistant as your normal user.
 
 ## Verification
 
@@ -170,7 +175,7 @@ The local API binds to `127.0.0.1:8765`, checks Host/Origin, and requires a per-
 
 Tests cover routing, direct execution and exact-operation sudo approvals, Windows executable discovery, browser URL encoding and launcher failures, provider extension/fallback, API origin/token checks, machine-wide paths, overwrite protection, password handshakes, and cross-filesystem moves, public-web policy, and system tools.
 
-Optional browser regression checks use simulated PCM/WebSocket voice events and desktop responses; they do not open real applications or contact Gemini:
+Optional browser regression checks use simulated PCM/WebSocket, Groq speech, and desktop responses; they do not open real applications or contact Groq:
 
 ```bash
 .venv/bin/python -m pip install playwright
@@ -178,7 +183,7 @@ Optional browser regression checks use simulated PCM/WebSocket voice events and 
 .venv/bin/python scripts/verify_ui.py
 ```
 
-These check persistent wake state, interim/final transcripts, queued commands, reconnect/pause/stop, denied microphone access, text fallback, output escaping, and layout widths from 320 to 1440 pixels. Screenshots go to `/tmp/amigo-desktop.png` and `/tmp/amigo-mobile.png`. A real Gemini API key, physical microphone, and Windows window launches still require testing on a Windows/WSL desktop.
+These check persistent wake state, finalized transcripts, queued commands, speech playback, reconnect/pause/stop, denied microphone access, text fallback, output escaping, and layout widths from 320 to 1440 pixels. Screenshots go to `/tmp/amigo-desktop.png` and `/tmp/amigo-mobile.png`. A real Groq API key, physical microphone, browser audio, and Windows window launches still require testing on a Windows/WSL desktop.
 
 ## Troubleshooting
 
@@ -187,6 +192,6 @@ These check persistent wake state, interim/final transcripts, queued commands, r
 - **Browser did not open:** restart the backend after updating. On WSL, verify Windows has a default HTTPS browser and working PowerShell/WSL interoperability; `wslview`, Edge, and Chrome are fallback launchers. On Linux, verify `xdg-open`. If launching fails, use the returned search link.
 - **Permission denied:** approve the specific administrator request. If sudo is denied, verify that the Linux account can use sudo. On mounted Windows drives, check Windows permissions. Changing `ASSISTANT_ALLOWED_PATHS` is no longer necessary.
 - **Dashboard disconnected:** ensure the backend is running, use `http://localhost:8765`, and refresh after a backend restart.
-- **Gemini unavailable:** check `GEMINI_API_KEY`, model names, network access, and rate limits. The UI reports local command fallback explicitly; deterministic tools remain available.
+- **Groq unavailable:** check `GROQ_API_KEY`, model names and permissions, network access, and rate limits. The UI reports local command fallback explicitly; deterministic tools remain available.
 
 MIT — see [LICENSE](LICENSE).

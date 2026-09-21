@@ -9,9 +9,16 @@ from dataclasses import dataclass
 class TranscriptEvent:
     text: str
     final: bool
+    utterance_id: str | None = None
 
     def as_json(self) -> dict[str, object]:
-        return {"type": "final" if self.final else "interim", "text": self.text}
+        payload: dict[str, object] = {
+            "type": "final" if self.final else "interim",
+            "text": self.text,
+        }
+        if self.utterance_id:
+            payload["utterance_id"] = self.utterance_id
+        return payload
 
 
 def status_event(state: str, message: str = "") -> dict[str, str]:

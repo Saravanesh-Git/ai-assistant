@@ -52,17 +52,26 @@ class Settings:
     ollama_url: str = field(default_factory=lambda: os.getenv("OLLAMA_URL", "http://localhost:11434"))
     ollama_model: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "").strip())
     llm_provider: str = field(default_factory=lambda: os.getenv("LLM_PROVIDER", "rule_based").lower())
-    gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", "").strip())
-    gemini_model: str = field(
-        default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
+    groq_api_key: str = field(default_factory=lambda: os.getenv("GROQ_API_KEY", "").strip())
+    groq_model: str = field(
+        default_factory=lambda: os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
     )
-    gemini_live_model: str = field(
+    groq_stt_model: str = field(
+        default_factory=lambda: os.getenv("GROQ_STT_MODEL", "whisper-large-v3-turbo").strip()
+    )
+    groq_tts_model: str = field(
         default_factory=lambda: os.getenv(
-            "GEMINI_LIVE_MODEL", "gemini-3.5-transcribe-live"
+            "GROQ_TTS_MODEL", "canopylabs/orpheus-v1-english"
         ).strip()
     )
-    gemini_timeout_seconds: int = field(
-        default_factory=lambda: _int_env("GEMINI_TIMEOUT_SECONDS", 60, 5, 180)
+    groq_tts_voice: str = field(
+        default_factory=lambda: os.getenv("GROQ_TTS_VOICE", "troy").strip()
+    )
+    groq_timeout_seconds: int = field(
+        default_factory=lambda: _int_env("GROQ_TIMEOUT_SECONDS", 60, 5, 180)
+    )
+    groq_max_retries: int = field(
+        default_factory=lambda: _int_env("GROQ_MAX_RETRIES", 1, 0, 2)
     )
     max_agent_tool_steps: int = field(
         default_factory=lambda: _int_env("MAX_AGENT_TOOL_STEPS", 6, 1, 12)

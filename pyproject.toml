@@ -16,7 +16,7 @@ dependencies = [
   "uvicorn>=0.30,<1",
   "mcp>=2,<3",
   "psutil>=5.9,<8",
-  "google-genai>=1.75,<2",
+  "groq>=1.7,<2",
   "jsonschema>=4.23,<5",
 ]
 

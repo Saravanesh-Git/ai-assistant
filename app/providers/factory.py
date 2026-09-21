@@ -17,19 +17,21 @@ def _ollama(settings: Settings) -> LLMProvider:
     return OllamaProvider(base_url=settings.ollama_url, model=settings.ollama_model)
 
 
-def _gemini(settings: Settings) -> LLMProvider:
-    from app.providers.gemini import GeminiProvider
-    return GeminiProvider(
-        api_key=settings.gemini_api_key,
-        model=settings.gemini_model,
-        timeout=settings.gemini_timeout_seconds,
+def _groq(settings: Settings) -> LLMProvider:
+    from app.providers.groq import GroqProvider
+
+    return GroqProvider(
+        api_key=settings.groq_api_key,
+        model=settings.groq_model,
+        timeout=settings.groq_timeout_seconds,
+        max_retries=settings.groq_max_retries,
     )
 
 
 PROVIDERS: dict[str, ProviderFactory] = {
     "rule_based": lambda settings: RuleBasedProvider(),
     "ollama": _ollama,
-    "gemini": _gemini,
+    "groq": _groq,
 }
 
 
