@@ -16,7 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-for package in ("mcp", "psutil", "httpx"):
+for package in ("mcp", "psutil", "httpx", "google.genai", "jsonschema", "starlette"):
     importlib.import_module(package)
 print("Dependencies: OK")
 
@@ -36,6 +36,27 @@ async def check_mcp():
 asyncio.run(check_mcp())
 
 settings = load_settings()
+if settings.llm_provider == "gemini":
+    if not settings.gemini_api_key:
+        print("Gemini: not configured (local command mode remains available)")
+    else:
+        try:
+            from google import genai
+            with genai.Client(api_key=settings.gemini_api_key) as client:
+                client.models.get(model=settings.gemini_model)
+            print(f"Gemini: configured and reachable ({settings.gemini_model})")
+        except Exception:
+            print("Gemini: configured but unavailable; local command mode remains available")
+else:
+    print(f"Gemini: not enabled (LLM_PROVIDER={settings.llm_provider})")
+
+if settings.voice_enabled and settings.gemini_api_key:
+    print(f"Voice: configured ({settings.gemini_live_model}, PCM16 mono 16 kHz)")
+elif settings.voice_enabled:
+    print("Voice: enabled but unavailable until GEMINI_API_KEY is configured")
+else:
+    print("Voice: disabled")
+
 endpoint = settings.searxng_url.rstrip("/") + "/search?" + urllib.parse.urlencode({"q": "test", "format": "json"})
 try:
     with urllib.request.urlopen(endpoint, timeout=2) as response:
@@ -45,5 +66,12 @@ try:
             print(f"SearXNG: unavailable (HTTP {response.status}); local tools remain available")
 except (OSError, urllib.error.URLError):
     print("SearXNG: unavailable; browser searches still work. Configure SEARXNG_URL for structured search results")
-PY
 
+try:
+    with urllib.request.urlopen("http://127.0.0.1:8765/api/config", timeout=2) as response:
+        payload = response.read(1024)
+        print("Local API and browser UI: OK" if response.status == 200 and b"A.M.I.G.O." in payload
+              else "Local API and browser UI: unexpected response")
+except (OSError, urllib.error.URLError):
+    print("Local API and browser UI: not running (start with .venv/bin/python -m app.web.server)")
+PY

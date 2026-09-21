@@ -1,14 +1,14 @@
-from pathlib import Path
-from unittest.mock import patch, Mock
+from unittest.mock import Mock, patch
 
 import pytest
 from starlette.testclient import TestClient
 
-from app.web.server import create_app
 from app.core.router import IntentRouter
-from security.path_policy import PathPolicy, PathPolicyError
-from servers.linux_server.file_tools import create_text_file_data, move_path_data
+from app.voice.protocol import TranscriptEvent
+from app.web.server import create_app
+from security.path_policy import PathPolicy
 from servers.linux_server.application_tools import open_application_data
+from servers.linux_server.file_tools import create_text_file_data, move_path_data
 
 
 class Manager:
@@ -24,6 +24,23 @@ class Manager:
     async def call(self, tool, arguments, **kwargs):
         self.calls.append((tool, arguments))
         return {'path': arguments['path'], 'created': True}
+
+
+class FakeVoice:
+    instances = []
+    def __init__(self, *, api_key, model):
+        self.api_key_received = bool(api_key)
+        self.model = model
+        self.audio = []
+        self.ended = False
+        self.__class__.instances.append(self)
+    async def __aenter__(self): return self
+    async def __aexit__(self, *args): pass
+    async def send_audio(self, chunk): self.audio.append(chunk)
+    async def end_audio(self): self.ended = True
+    async def events(self):
+        yield TranscriptEvent('open the', False)
+        yield TranscriptEvent('open the browser', True)
 
 
 def test_file_creation_and_moves(tmp_path):
@@ -86,3 +103,23 @@ def test_web_direct_actions_and_config(monkeypatch):
         assert client.post('/api/command', headers=headers, json={'message': 'x' * 17000}).status_code == 413
         assert client.post('/api/command', headers=headers, content='text').status_code == 415
         assert 'A.M.I.G.O.' in client.get('/').text
+
+
+def test_live_voice_websocket_is_backend_authenticated_and_separates_transcripts(monkeypatch):
+    monkeypatch.setenv('VOICE_ENABLED', 'true')
+    monkeypatch.setenv('GEMINI_API_KEY', 'backend-only-secret')
+    FakeVoice.instances.clear()
+    app = create_app(Manager, voice_factory=FakeVoice)
+    with TestClient(app, base_url='http://localhost:8765') as client:
+        config = client.get('/api/config').json()
+        assert config['voice_available'] is True
+        assert 'backend-only-secret' not in str(config)
+        with client.websocket_connect(
+            f"/api/voice?token={config['token']}",
+            headers={"host":"localhost:8765", "origin":"http://localhost:8765"},
+        ) as socket:
+            assert socket.receive_json()['state'] == 'connected'
+            socket.send_bytes(b'\x00\x00')
+            assert socket.receive_json() == {'type':'interim', 'text':'open the'}
+            assert socket.receive_json() == {'type':'final', 'text':'open the browser'}
+    assert FakeVoice.instances[0].api_key_received is True

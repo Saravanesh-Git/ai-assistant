@@ -1,6 +1,6 @@
 # A.M.I.G.O.
 
-**Assistant for Managing Information & General Operations.** A personal command center for Linux and Windows through WSL. Use text or voice to launch apps, manage files, check your system, and open web searches in your desktop browser. No AI model, GPU, Docker, or paid API is required.
+**Assistant for Managing Information & General Operations.** A Gemini-powered personal command center for Linux and Windows through WSL. Gemini understands natural language and chooses actions; the existing MCP servers remain the only execution layer. Local deterministic command mode remains available without an API key, GPU, or local model.
 
 The browser UI features a responsive cyan HUD, an animated assistant core, real system readings, quick app launches, and a shared text/voice command stream. Animations respect your reduced-motion preference.
 
@@ -36,7 +36,9 @@ local-assistant-ui            # browser interface, after installation
 
 Speech transcripts appear below the command input without overwriting your typed draft. Final voice requests and typed requests share an ordered queue, so a follow-up request can wait for an action already running. Interim speech never executes. Enter sends text; Shift+Enter inserts a newline. The command guide lists examples and your configured file locations.
 
-Voice uses the [browser SpeechRecognition API](https://developer.mozilla.org/en-US/docs/Web/API/SpeechRecognition), which has limited browser support and may send audio to an online speech service. Keep the tab open. Browser suspension, device sleep, permissions, and service outages can interrupt listening; a web page cannot guarantee an always-on background microphone. A normal [recognition end event](https://developer.mozilla.org/en-US/docs/Web/API/SpeechRecognition/end_event) restarts recognition while preserving the awake state. Persistent errors stop voice with an explanation, and text remains available. Reloading the page starts a new voice session. The Python backend receives text, not microphone audio.
+Voice captures mono microphone audio in the browser, converts it to 16-bit PCM at 16 kHz, and streams small chunks over a local authenticated WebSocket. The Python backend holds the API key and forwards audio to Gemini Live for interim and final transcription. The wake/awake/pause state machine runs separately in the browser; only final transcripts execute. The old browser `SpeechRecognition` API is no longer used. Keep the tab open: browser suspension and device sleep can still interrupt a web microphone. Voice reconnects with bounded retries and text remains available.
+
+The initial voice implementation prioritizes Gemini Live input transcription and reliable text responses. `VOICE_OUTPUT_ENABLED` is reserved for the optional native-audio playback phase; this version does not yet send Gemini output audio to the browser, so responses remain visible as text even when that setting is `true`.
 
 ## Commands
 
@@ -118,42 +120,44 @@ docker compose up -d searxng
 # or configure SEARXNG_URL to a trusted JSON-enabled instance
 ```
 
-Public-page f
-tch retains scheme, DNS/IP, redirect, timeout, MIME type, and response-size validation. A configured SearXNG instance is operator-trusted and may intentionally be local.
+Public-page fetch retains scheme, DNS/IP, redirect, timeout, MIME type, and response-size validation. A configured SearXNG instance is operator-trusted and may intentionally be local.
 
-## Optional and future AI
+## Gemini setup
 
-Deterministic routing handles all supported commands before invoking any optional provider. The default `rule_based` provider needs no model or network service. Optional Ollama remains available:
+1. Create an API key in [Google AI Studio](https://aistudio.google.com/app/apikey).
+2. Copy `.env.example` to `.env` if needed.
+3. Set the provider and key:
+
+```dotenv
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=your-key
+GEMINI_MODEL=gemini-3.8-flash
+GEMINI_LIVE_MODEL=gemini-3.5-transcribe-live
+```
+
+4. Restart A.M.I.G.O. and test `Can you tell me whether my laptop is low on memory?`
+5. Open the browser UI, enable voice, and say `Hey Amigo, check my RAM usage.`
+
+Never commit `.env` or an API key. The key stays in backend configuration and is never returned by the API, embedded in JavaScript, included in tool arguments, or written to audit logs. Model names are configuration values because Google may add or retire models.
+
+Gemini can answer directly, ask for clarification, or request one or more declared MCP functions. The core validates every name and JSON schema, checks the permission registry, invokes the existing MCP client, and returns the result to Gemini. A request is limited by `MAX_AGENT_TOOL_STEPS` (default 6). Model-generated arbitrary shell execution is unavailable: `run_command` is omitted from Gemini's tool catalog and remains available only as an explicit deterministic user command.
+
+Short conversation history is kept only in memory for follow-ups such as “Is that high?”. Restarting clears it. Prompts, tool arguments, file contents, keys, and passwords are not written to the metadata-only audit log. File contents are offered to Gemini only for an explicit request to read, review, analyze, explain, or summarize a file.
+
+If Gemini cannot initialize, A.M.I.G.O. visibly falls back to `rule_based` local command mode. Existing deterministic system, file, application, browser, and explicit shell commands continue to work. Optional Ollama remains available for direct chat responses:
 
 ```bash
 LLM_PROVIDER=ollama OLLAMA_MODEL=your-model .venv/bin/python -m app.web.server
 ```
 
-Ollama must already be installed and configured. A.M.I.G.O. never starts it or downloads models. If a provider cannot be initialized, the factory falls back to local rules; request-time failures are reported without disabling tools.
-
-Both CLI and web use `app/providers/factory.py`. To add an AI integration:
-
-1. Implement `LLMProvider.generate(messages, tools=None)` from `app/core/llm.py`.
-2. Register a settings-to-provider factory in `PROVIDERS`.
-3. Select it using `LLM_PROVIDER` and read any provider-specific settings in that adapter.
-
-Providers currently generate text responses, without conversation persistence or automatic model tool calls. Future structured tool proposals must pass known-tool, argument, permission, and server validation before execution. Never give provider code a direct process/file executor. `app/web/static/voice.js` similarly isolates browser speech behind state, transcript, and command callbacks so a future local speech adapter can replace it without changing the command API.
+Ollama must already be installed and configured. A.M.I.G.O. never starts it or downloads models.
 
 ```text
-Browser (text / speech adapter) or CLI
-                  ↓
-           Assistant core
-        deterministic intent router
-          ↙                   ↘
- Known command          Optional text provider
-       ↓
- Permission policy → MCP tool manager
-                 ↙                  ↘
- Linux / WSL server             Web server
- system, files, apps, browser   SearXNG, fetch
+Text → Assistant core → Gemini reasoning → validated MCP calls → Linux/Web MCP servers
+Voice → PCM WebSocket → Gemini Live transcription → Assistant core → the same reasoning and MCP path
 ```
 
-The tool manager discovers independent stdio MCP servers. To add a capability, implement and validate it in its server, decorate it with `@mcp.tool()`, classify it in `app/core/permissions.py`, and add a deterministic route if appropriate. Unknown tools remain denied. Audit logs contain tool/status metadata, not prompts, paths, content, tokens, or arguments.
+The deterministic router remains a fast path for simple commands and the fallback when AI is unavailable. The tool manager discovers independent stdio MCP servers and exposes their names, descriptions, and input schemas to Gemini. To add a capability, implement and validate it in its server, decorate it with `@mcp.tool()`, classify it in `app/core/permissions.py`, and add a deterministic route if appropriate. Unknown tools remain denied.
 
 The local API binds to `127.0.0.1:8765`, checks Host/Origin, and requires a per-process token for commands and telemetry. Keep it on loopback rather than exposing it through a public tunnel. Run the assistant as your normal user.
 
@@ -166,7 +170,7 @@ The local API binds to `127.0.0.1:8765`, checks Host/Origin, and requires a per-
 
 Tests cover routing, direct execution and exact-operation sudo approvals, Windows executable discovery, browser URL encoding and launcher failures, provider extension/fallback, API origin/token checks, machine-wide paths, overwrite protection, password handshakes, and cross-filesystem moves, public-web policy, and system tools.
 
-Optional browser regression checks use simulated speech and desktop responses; they do not open real applications:
+Optional browser regression checks use simulated PCM/WebSocket voice events and desktop responses; they do not open real applications or contact Gemini:
 
 ```bash
 .venv/bin/python -m pip install playwright
@@ -174,15 +178,15 @@ Optional browser regression checks use simulated speech and desktop responses; t
 .venv/bin/python scripts/verify_ui.py
 ```
 
-These check persistent wake state, interim/final transcripts, queued commands, restart/pause/stop, denied microphone access, text fallback, output escaping, and layout widths from 320 to 1440 pixels. Screenshots go to `/tmp/amigo-desktop.png` and `/tmp/amigo-mobile.png`. Real microphone recognition and Windows window launches still require testing on a Windows/WSL desktop.
+These check persistent wake state, interim/final transcripts, queued commands, reconnect/pause/stop, denied microphone access, text fallback, output escaping, and layout widths from 320 to 1440 pixels. Screenshots go to `/tmp/amigo-desktop.png` and `/tmp/amigo-mobile.png`. A real Gemini API key, physical microphone, and Windows window launches still require testing on a Windows/WSL desktop.
 
 ## Troubleshooting
 
-- **Microphone blocked:** allow microphone access in the browser's site settings, then click Enable voice. Use Chrome on Windows if the browser has no speech API.
+- **Microphone blocked:** allow microphone access in the browser's site settings, then click Enable voice. Use a current Chrome, Edge, or Firefox build with microphone, Web Audio, and WebSocket support.
 - **Windows app unavailable:** verify WSL interop, installation, PATH, and Windows profile discovery. `open windows calculator` is a useful first check.
 - **Browser did not open:** restart the backend after updating. On WSL, verify Windows has a default HTTPS browser and working PowerShell/WSL interoperability; `wslview`, Edge, and Chrome are fallback launchers. On Linux, verify `xdg-open`. If launching fails, use the returned search link.
 - **Permission denied:** approve the specific administrator request. If sudo is denied, verify that the Linux account can use sudo. On mounted Windows drives, check Windows permissions. Changing `ASSISTANT_ALLOWED_PATHS` is no longer necessary.
 - **Dashboard disconnected:** ensure the backend is running, use `http://localhost:8765`, and refresh after a backend restart.
-- **No AI provider:** expected by default. System, file, app, and browser tools continue to work.
+- **Gemini unavailable:** check `GEMINI_API_KEY`, model names, network access, and rate limits. The UI reports local command fallback explicitly; deterministic tools remain available.
 
 MIT — see [LICENSE](LICENSE).

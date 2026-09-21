@@ -10,7 +10,6 @@ from app.core.assistant import Assistant
 from app.core.config import Settings
 from app.core.tool_manager import ToolManager
 
-
 BANNER = r"""
 ╭────────────────────────────────────────╮
 │               A.M.I.G.O.               │
@@ -38,7 +37,8 @@ def _gpu_summary() -> str:
     return "Not detected"
 
 
-async def show_system_check(manager: ToolManager, settings: Settings, llm_name: str) -> None:
+async def show_system_check(manager: ToolManager, settings: Settings, llm_name: str,
+                            fallback_reason: str | None = None) -> None:
     try:
         info = await manager.call("get_system_info", {}, permission_result="startup_read")
         disk_info = await manager.call(
@@ -60,6 +60,8 @@ async def show_system_check(manager: ToolManager, settings: Settings, llm_name: 
     print(f"Available disk: {disk}")
     print(f"Mode: {'Lightweight' if settings.lightweight_mode else 'Standard'}")
     print(f"LLM: {llm_name}")
+    if fallback_reason:
+        print(f"AI note: {fallback_reason}")
     if manager.server_errors:
         print("Note: one or more optional capability servers are unavailable.")
     print("\nA.M.I.G.O. is ready. Type 'help' or 'exit'.\n")
@@ -68,7 +70,8 @@ async def show_system_check(manager: ToolManager, settings: Settings, llm_name: 
 async def run_cli(assistant: Assistant, manager: ToolManager, settings: Settings) -> None:
     print(BANNER)
     llm_label = assistant.provider.name if assistant.provider.available else "Unavailable (rules active)"
-    await show_system_check(manager, settings, llm_label)
+    await show_system_check(manager, settings, llm_label,
+                            getattr(assistant.provider, "fallback_reason", None))
     while True:
         try:
             user_input = input("You > ")

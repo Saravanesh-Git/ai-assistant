@@ -12,6 +12,7 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
 
+from jsonschema import Draft202012Validator, ValidationError
 from mcp import Client, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -64,6 +65,7 @@ class ToolManager:
         self._stack = AsyncExitStack()
         self._clients: list[Client] = []
         self._tool_clients: dict[str, Client] = {}
+        self._tool_definitions: dict[str, dict[str, Any]] = {}
         self._semaphore = asyncio.Semaphore(settings.max_concurrent_tools)
         self.logger = configure_audit_logger(settings)
         self.server_errors: dict[str, str] = {}
@@ -105,6 +107,12 @@ class ToolManager:
                     if tool.name in self._tool_clients:
                         raise RuntimeError(f"Duplicate MCP tool name: {tool.name}")
                     self._tool_clients[tool.name] = client
+                    schema = getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None)
+                    self._tool_definitions[tool.name] = {
+                        "name": tool.name,
+                        "description": tool.description or "",
+                        "input_schema": schema or {"type": "object", "properties": {}},
+                    }
             except Exception as exc:
                 self.server_errors[module] = type(exc).__name__
         return self
@@ -116,10 +124,29 @@ class ToolManager:
     def available_tools(self) -> tuple[str, ...]:
         return tuple(sorted(self._tool_clients))
 
+    @property
+    def tool_definitions(self) -> tuple[dict[str, Any], ...]:
+        """Provider-neutral MCP descriptions and JSON argument schemas."""
+        return tuple(self._tool_definitions[name].copy() for name in sorted(self._tool_definitions))
+
+    def validate_call(self, tool: str, arguments: dict[str, Any]) -> None:
+        definition = self._tool_definitions.get(tool)
+        if definition is None:
+            raise ToolUnavailableError(f"Capability unavailable: {tool}")
+        if not isinstance(arguments, dict):
+            raise ToolInvocationError("Tool arguments must be an object")
+        try:
+            Draft202012Validator(definition["input_schema"]).validate(arguments)
+        except ValidationError as exc:
+            path = ".".join(str(item) for item in exc.absolute_path)
+            location = f" at {path}" if path else ""
+            raise ToolInvocationError(f"Invalid arguments for {tool}{location}: {exc.message}") from exc
+
     async def call(self, tool: str, arguments: dict[str, Any], *, permission_result: str) -> Any:
         client = self._tool_clients.get(tool)
         if client is None:
             raise ToolUnavailableError(f"Capability unavailable: {tool}")
+        self.validate_call(tool, arguments)
         started = time.monotonic()
         status = "failure"
         error_type: str | None = None

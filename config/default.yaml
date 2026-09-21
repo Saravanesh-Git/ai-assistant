@@ -22,6 +22,13 @@ web:
   max_search_results: 10
 
 llm:
-  provider: "rule_based"
+  provider: "gemini"
+  gemini_model: "gemini-3.8-flash"
+  gemini_live_model: "gemini-3.5-transcribe-live"
+  max_agent_tool_steps: 6
   ollama_model: ""
 
+voice:
+  enabled: true
+  output_enabled: true
+  input_format: "pcm_s16le_16000_mono"

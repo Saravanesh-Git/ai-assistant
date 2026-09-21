@@ -11,6 +11,9 @@ class RuleBasedProvider(LLMProvider):
     name = "rule_based"
     available = True
 
+    def __init__(self, fallback_reason: str | None = None) -> None:
+        self.fallback_reason = fallback_reason
+
     async def generate(
         self,
         messages: Sequence[Message],

@@ -17,9 +17,19 @@ def _ollama(settings: Settings) -> LLMProvider:
     return OllamaProvider(base_url=settings.ollama_url, model=settings.ollama_model)
 
 
+def _gemini(settings: Settings) -> LLMProvider:
+    from app.providers.gemini import GeminiProvider
+    return GeminiProvider(
+        api_key=settings.gemini_api_key,
+        model=settings.gemini_model,
+        timeout=settings.gemini_timeout_seconds,
+    )
+
+
 PROVIDERS: dict[str, ProviderFactory] = {
     "rule_based": lambda settings: RuleBasedProvider(),
     "ollama": _ollama,
+    "gemini": _gemini,
 }
 
 
@@ -30,6 +40,13 @@ def create_provider(settings: Settings) -> LLMProvider:
             provider = factory(settings)
             if provider.available:
                 return provider
-        except Exception:
-            pass
-    return RuleBasedProvider()
+        except Exception as exc:
+            return RuleBasedProvider(
+                f"{settings.llm_provider} unavailable ({type(exc).__name__}); using local command mode"
+            )
+    reason = None
+    if settings.llm_provider not in PROVIDERS:
+        reason = f"Unknown AI provider {settings.llm_provider!r}; using local command mode"
+    elif settings.llm_provider != "rule_based":
+        reason = f"{settings.llm_provider} is not configured; using local command mode"
+    return RuleBasedProvider(reason)

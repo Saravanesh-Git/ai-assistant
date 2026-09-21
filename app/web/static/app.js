@@ -1,7 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const adminRequests = new Map();
-let token, busy = false, queue = [], voiceState = {enabled: false, awake: false}, statusTimer;
+let token, busy = false, queue = [], voiceState = {enabled: false, awake: false}, statusTimer, activityPhase = 'READY', fallbackShown = false;
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 function updateClock() {
@@ -16,9 +16,9 @@ setInterval(updateClock, 1000);
 function updateState() {
   const state = busy ? 'processing' : voiceState.awake ? 'awake' : 'idle';
   $('reactor').dataset.state = state;
-  $('core-state').textContent = busy ? 'PROCESSING REQUEST' : voiceState.awake ? 'LISTENING TO YOU' : voiceState.enabled ? 'AWAITING WAKE PHRASE' : 'STANDING BY';
+  $('core-state').textContent = busy ? activityPhase : voiceState.awake ? 'LISTENING TO YOU' : voiceState.enabled ? 'AWAITING WAKE PHRASE' : 'STANDING BY';
   $('core-kicker').textContent = busy ? 'ON IT, JUST A MOMENT' : voiceState.awake ? 'WHAT’S NEXT?' : 'READY WHEN YOU ARE';
-  $('activity').textContent = busy ? (queue.length ? `WORKING · ${queue.length} QUEUED` : 'WORKING') : 'READY';
+  $('activity').textContent = busy ? (queue.length ? `${activityPhase} · ${queue.length} QUEUED` : activityPhase) : 'READY';
   $('input-mode').textContent = voiceState.awake ? 'VOICE + TEXT' : 'TEXT';
   $('send').disabled = !token;
   document.querySelectorAll('[data-command]').forEach(button => button.disabled = !token);
@@ -69,7 +69,7 @@ function enqueue(message, source = 'text') {
 }
 async function drainQueue() {
   if (busy || !queue.length) {updateState(); return;}
-  busy = true; updateState();
+  busy = true; activityPhase = 'THINKING'; updateState();
   const payload = queue.shift();
   try {
     const requestBody = JSON.stringify(payload);
@@ -84,12 +84,13 @@ async function drainQueue() {
       throw new Error(data.error || 'The request could not be completed.');
     }
     if (data.approval) {
+      activityPhase = 'EXECUTING';
       showAdministratorRequest(data);
     } else addMessage(data.reply || 'The action returned no response.');
   } catch (error) {
     addMessage(`${error.message} If the connection was interrupted, check the result before repeating the command.`, 'error');
   } finally {
-    busy = false; updateState();
+    busy = false; activityPhase = 'READY'; updateState();
     drainQueue();
   }
 }
@@ -175,6 +176,9 @@ async function connect() {
     $('platform').textContent = `${data.platform} · ${data.platform === 'Windows + WSL' ? 'WSL vitals' : 'Local machine'}`;
     $('desktop-state').textContent = data.windows_available ? 'WINDOWS + WSL' : data.platform === 'Windows + WSL' ? 'WSL ONLY' : 'LINUX';
     $('engine').textContent = data.provider === 'rule_based' ? 'LOCAL RULES' : data.provider.toUpperCase();
+    voice.configure({token, available:data.voice_available});
+    $('voice-connection').textContent = data.voice_available ? (voice.connected ? 'CONNECTED' : 'READY') : 'NOT CONFIGURED';
+    if (data.provider_fallback && !fallbackShown) {addMessage(`AI provider unavailable. Using local command mode. ${data.provider_fallback}`, 'error'); fallbackShown = true;}
     $('tool-count').textContent = String(data.tools.length).padStart(2, '0') + ' CONNECTED';
     $('action-mode').textContent = 'ASK FOR ADMIN ONLY';
     $('allowed-paths').replaceChildren();
@@ -217,26 +221,28 @@ async function refreshStatus() {
   statusTimer = setTimeout(refreshStatus, 15000);
 }
 const voice = new window.AmigoVoice({
-  Recognition: window.SpeechRecognition || window.webkitSpeechRecognition,
   onState: state => {
     voiceState = state;
     $('mic-label').textContent = state.enabled ? 'Turn off mic' : 'Enable voice';
     $('mic').setAttribute('aria-pressed', String(state.enabled));
     $('voice-status').textContent = state.message;
+    $('voice-connection').textContent = state.connected ? 'CONNECTED' : state.enabled ? 'CONNECTING' : state.available ? 'READY' : 'NOT CONFIGURED';
     $('voice-heading').textContent = state.awake ? 'I’m with you. What’s next?' : 'Just say “Hey Amigo”';
     $('pause').hidden = !state.awake;
     updateState();
   },
   onTranscript: (text, interim) => {
-    $('live').textContent = text ? `${interim ? 'Hearing' : 'Heard'}: ${text}` : 'Text and voice, working together.';
+    if (interim) $('interim-transcript').textContent = `Interim: ${text || '—'}`;
+    else {$('final-transcript').textContent = `Final: ${text || '—'}`; $('interim-transcript').textContent = 'Interim: —';}
+    $('live').textContent = text ? `${interim ? 'Listening' : 'Final transcript ready'}: ${text}` : 'Text and voice, working together.';
   },
   onCommand: text => enqueue(text, 'voice'),
 });
-$('mic').onclick = () => voice.enabled ? voice.stop() : voice.start();
+$('mic').onclick = () => voice.enabled ? voice.stop() : void voice.start();
 $('pause').onclick = () => voice.pause();
-if (!voice.recognition) {
+if (!voice.supported) {
   $('mic').disabled = true;
-  $('voice-status').textContent = 'Voice isn’t supported here. Try Chrome on Windows, or type a command below.';
+  $('voice-status').textContent = 'Live microphone streaming isn’t supported here. Try a current browser, or type a command.';
 }
 window.addEventListener('pagehide', () => {voice.stop(); clearTimeout(statusTimer);});
 window.addEventListener('pageshow', event => {if (event.persisted) connect();});

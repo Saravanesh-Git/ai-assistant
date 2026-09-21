@@ -2,17 +2,32 @@
 
 from __future__ import annotations
 
+import re
+from collections import deque
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from app.core.llm import LLMProvider, Message
+from app.core.config import Settings
+from app.core.elevation import (
+    AuthenticationRequired,
+    ElevationError,
+    ElevationRequired,
+    run_elevated,
+)
+from app.core.llm import LLMProvider, Message, ToolResult
 from app.core.permissions import PermissionManager
 from app.core.router import IntentRouter
 from app.core.tool_manager import ToolInvocationError, ToolManager, ToolUnavailableError
-from app.core.elevation import ElevationRequired, AuthenticationRequired, ElevationError, run_elevated
-from app.core.config import Settings
 
 ConfirmCallback = Callable[[str, str, dict[str, Any]], Awaitable[bool]]
+
+MODEL_DENIED_TOOLS = frozenset({"run_command", "run_safe_command"})
+_MULTI_ACTION = re.compile(
+    r"\b(?:and then|then|after that|also|and\s+(?:open|tell|show|check|get|search|create|list|read|find|copy|move|run))\b",
+    re.I,
+)
+_DIRECT_COMMAND = re.compile(r"^(?:please\s+)?(?:run|execute|sudo)\b", re.I)
+_SENSITIVE_FILE_AI = re.compile(r"\b(?:read|summari[sz]e|analy[sz]e|explain|review)\b.*\bfile\b", re.I)
 
 
 class Assistant:
@@ -25,6 +40,8 @@ class Assistant:
         permissions: PermissionManager | None = None,
         confirm: ConfirmCallback | None = None,
         authenticate: Callable[[], Awaitable[str]] | None = None,
+        history_limit: int | None = None,
+        max_tool_steps: int | None = None,
     ) -> None:
         self.tools = tool_manager
         self.provider = provider
@@ -32,6 +49,9 @@ class Assistant:
         self.permissions = permissions or PermissionManager()
         self.confirm = confirm
         self.authenticate = authenticate
+        settings = getattr(tool_manager, "settings", None)
+        self.history = deque(maxlen=history_limit or getattr(settings, "history_limit", 12))
+        self.max_tool_steps = max_tool_steps or getattr(settings, "max_agent_tool_steps", 6)
 
     async def handle(self, user_input: str) -> str:
         route = self.router.route(user_input)
@@ -39,9 +59,22 @@ class Assistant:
             return "I'm here. Enter a request."
         if route.intent == "unsafe_path":
             return "I couldn't understand that path. Use an absolute Linux path, a Windows drive path, or a path relative to your home."
+        if self.provider.name != "rule_based" and not self._use_fast_path(user_input, route):
+            try:
+                reply = await self._handle_with_model(user_input)
+                self._remember(user_input, reply)
+                return reply
+            except ElevationRequired:
+                raise
+            except TimeoutError:
+                return "I couldn't reach Gemini before the request timed out. Your local system commands are still available."
+            except Exception:
+                return "I couldn't reach Gemini right now. Your local system commands are still available."
         if route.tool is None:
             try:
-                return await self.provider.generate([Message("user", user_input)])
+                reply = await self.provider.generate([*self.history, Message("user", user_input)])
+                self._remember(user_input, reply)
+                return reply
             except Exception:
                 return "I couldn't classify that request, and the optional AI provider is unavailable."
         decision = self.permissions.check_permission(route.tool, route.arguments)
@@ -53,7 +86,9 @@ class Assistant:
             data = await self.tools.call(route.tool, route.arguments, permission_result="direct_request")
             if isinstance(data, dict) and data.get("elevation_required"):
                 raise ElevationRequired(route.tool, route.arguments, data.get("reason", "OS permission denied"))
-            return self._format(route.tool, data)
+            reply = self._format(route.tool, data)
+            self._remember(user_input, reply)
+            return reply
         except ElevationRequired as proposal:
             if self.confirm is None:
                 raise
@@ -78,6 +113,73 @@ class Assistant:
             return f"I couldn't complete that action: {exc}"
         except Exception as exc:
             return f"I couldn't complete that action ({type(exc).__name__})."
+
+    def _use_fast_path(self, user_input: str, route: Any) -> bool:
+        if route.tool is None or _MULTI_ACTION.search(user_input):
+            return False
+        # Shell execution is available only when directly and deterministically requested.
+        if route.tool == "run_command":
+            return bool(_DIRECT_COMMAND.match(user_input.strip()))
+        # Exact router matches stay low latency; natural questions go to Gemini.
+        simple = len(user_input.split()) <= 7
+        return simple and route.confidence >= 0.9
+
+    def _remember(self, user_input: str, reply: str) -> None:
+        self.history.append(Message("user", user_input))
+        self.history.append(Message("assistant", reply))
+
+    def _model_tools(self, user_input: str) -> tuple[dict[str, Any], ...]:
+        definitions = getattr(self.tools, "tool_definitions", ())
+        allowed = []
+        for definition in definitions:
+            name = definition.get("name")
+            if name in MODEL_DENIED_TOOLS:
+                continue
+            if name == "read_text_file" and not _SENSITIVE_FILE_AI.search(user_input):
+                continue
+            if self.permissions.check_permission(str(name), {}).allowed:
+                allowed.append(definition)
+        return tuple(allowed)
+
+    async def _handle_with_model(self, user_input: str) -> str:
+        messages = [*self.history, Message("user", user_input)]
+        tools = self._model_tools(user_input)
+        response = await self.provider.generate_turn(messages, tools)
+        steps = 0
+        while response.tool_calls:
+            results = []
+            for call in response.tool_calls:
+                steps += 1
+                if steps > self.max_tool_steps:
+                    return f"I stopped after {self.max_tool_steps} tool calls to avoid an agent loop."
+                definition = next((item for item in tools if item.get("name") == call.name), None)
+                decision = self.permissions.check_permission(call.name, call.arguments)
+                if definition is None or not decision.allowed:
+                    results.append(ToolResult(call.name, call_id=call.call_id,
+                                              error="Unknown or unavailable tool"))
+                    continue
+                validator = getattr(self.tools, "validate_call", None)
+                try:
+                    if validator:
+                        validator(call.name, call.arguments)
+                    data = await self.tools.call(
+                        call.name, call.arguments, permission_result="model_requested"
+                    )
+                    if isinstance(data, dict) and data.get("elevation_required"):
+                        raise ElevationRequired(
+                            call.name, call.arguments,
+                            data.get("reason", "OS permission denied"),
+                        )
+                    results.append(ToolResult(call.name, result=data, call_id=call.call_id))
+                except ElevationRequired:
+                    raise
+                except (ToolUnavailableError, ToolInvocationError, OSError, ValueError, TimeoutError) as exc:
+                    results.append(ToolResult(call.name, call_id=call.call_id,
+                                              error=f"{type(exc).__name__}: {exc}"))
+            response = await self.provider.generate_turn(
+                messages, tools, continuation=response.continuation, tool_results=results
+            )
+        return response.text or "The request completed, but Gemini returned no text response."
 
     async def execute_approved(self, tool: str, arguments: dict, password: str | None = None) -> str:
         """Called only with an exact, server-held approval (or CLI confirmation)."""

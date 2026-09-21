@@ -15,6 +15,13 @@ def _int_env(name: str, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(value, maximum))
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().casefold() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     # Legacy constructor fields remain compatible; environment allowlists and
@@ -45,6 +52,25 @@ class Settings:
     ollama_url: str = field(default_factory=lambda: os.getenv("OLLAMA_URL", "http://localhost:11434"))
     ollama_model: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "").strip())
     llm_provider: str = field(default_factory=lambda: os.getenv("LLM_PROVIDER", "rule_based").lower())
+    gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", "").strip())
+    gemini_model: str = field(
+        default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
+    )
+    gemini_live_model: str = field(
+        default_factory=lambda: os.getenv(
+            "GEMINI_LIVE_MODEL", "gemini-3.5-transcribe-live"
+        ).strip()
+    )
+    gemini_timeout_seconds: int = field(
+        default_factory=lambda: _int_env("GEMINI_TIMEOUT_SECONDS", 60, 5, 180)
+    )
+    max_agent_tool_steps: int = field(
+        default_factory=lambda: _int_env("MAX_AGENT_TOOL_STEPS", 6, 1, 12)
+    )
+    voice_enabled: bool = field(default_factory=lambda: _bool_env("VOICE_ENABLED", True))
+    voice_output_enabled: bool = field(
+        default_factory=lambda: _bool_env("VOICE_OUTPUT_ENABLED", True)
+    )
     log_file: Path = field(default_factory=lambda: Path(os.getenv("LOG_FILE", "local-assistant.log")))
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO").upper())
 
